@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Chatbot - Development Server</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 RAG Chatbot Development Server</h1>
+        <p>Welcome to the development server! This is <strong>Phase 2</strong> with full MVC architecture.</p>
+        
+        <div class="test-section">
+            <h3>Test Hello Endpoint</h3>
+            <p>This endpoint demonstrates our MVC structure and will evolve into the chat interface.</p>
+            
+            <form action="/hello" method="POST" class="input-group">
+                <input type="text" name="name" placeholder="Enter your name" value="World" required>
+                <input type="text" name="message" placeholder="Optional message">
+                <button type="submit">Send Hello</button>
+            </form>
+        </div>
+
+        <div class="test-section">
+            <h3>Development Roadmap</h3>
+            <ul>
+                <li>✅ <strong>Phase 1:</strong> Basic web request handler</li>
+                <li>✅ <strong>Phase 2:</strong> MVC structure with models and controllers</li>
+                <li>⏳ <strong>Phase 3:</strong> Document processing and storage</li>
+                <li>⏳ <strong>Phase 4:</strong> LLM integration</li>
+                <li>⏳ <strong>Phase 5:</strong> Full RAG pipeline</li>
+            </ul>
+        </div>
+
+        <div class="test-section">
+            <h3>Test API Endpoint</h3>
+            <p>Try the API endpoint:</p>
+            <pre style="background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 12px;">
+curl -X POST http://localhost:8080/hello \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Developer", "message": "Testing API"}'
+            </pre>
+        </div>
+        
+        <div class="status">
+            Server Status: Active (MVC with Views) | Models ✅ | Controllers ✅ | Views ✅
+        </div>
+    </div>
+</body>
+</html>

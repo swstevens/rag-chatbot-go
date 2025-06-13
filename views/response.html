@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Response - RAG Chatbot</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Response</h1>
+        
+        <div class="test-section">
+            <h3>Server Response</h3>
+            <div class="response">
+                <strong>Response:</strong> {{.Response}}<br>
+                <strong>Status:</strong> {{.Status}}
+            </div>
+            
+            <div style="margin-top: 20px;">
+                <a href="/" class="button">← Back to Home</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

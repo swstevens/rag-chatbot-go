@@ -67,7 +67,7 @@ func main() {
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = ":8080"
+		port = ":8000"
 	}
 
 	// Create and start server with MVC structure

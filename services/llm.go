@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"net/http"
 	"time"
 
@@ -21,9 +22,9 @@ type LLMService struct {
 
 // OllamaRequest represents a request to the Ollama API
 type OllamaRequest struct {
-	Model   string                 `json:"model"`
-	Prompt  string                 `json:"prompt"`
-	Stream  bool                   `json:"stream"`
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream"`
 	Options map[string]interface{} `json:"options,omitempty"`
 }
 
@@ -40,7 +41,7 @@ func NewLLMService(baseURL, model string) *LLMService {
 		baseURL = "http://localhost:11434" // Default Ollama URL
 	}
 	if model == "" {
-		model = "tinyllama:latest" // Optimized for Raspberry Pi
+		model = "tinyllama"
 	}
 
 	return &LLMService{
@@ -57,18 +58,19 @@ func NewLLMService(baseURL, model string) *LLMService {
 func (l *LLMService) GenerateResponse(message string, context []string, history []models.ChatMessage) (string, error) {
 	// Build the prompt with context and history
 	prompt := l.buildPrompt(message, context, history)
-
-	// Create request
+	
+	// Create request with tighter controls
 	request := OllamaRequest{
 		Model:  l.model,
 		Prompt: prompt,
 		Stream: false,
 		Options: map[string]interface{}{
-			"temperature":    0.7,
-			"max_tokens":     300, // Reduced for Pi performance
-			"top_p":          0.9,
-			"repeat_penalty": 1.1,
-			"num_ctx":        1024, // Smaller context window for Pi
+			"temperature":     0.7,
+			"max_tokens":      150,  // Much shorter responses
+			"top_p":           0.9,
+			"repeat_penalty":  1.2,  // Prevent repetition
+			"num_ctx":         1024, // Smaller context window for Pi
+			"stop":            []string{"\n\nHuman:", "\nHuman:", "User:", "\n\n"}, // Stop tokens
 		},
 	}
 
@@ -91,7 +93,7 @@ func (l *LLMService) GenerateResponse(message string, context []string, history 
 		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response
+	// Parse response and clean it up
 	var ollamaResp OllamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
@@ -101,35 +103,80 @@ func (l *LLMService) GenerateResponse(message string, context []string, history 
 		return "", fmt.Errorf("LLM returned error: %s", ollamaResp.Error)
 	}
 
-	return ollamaResp.Response, nil
+	// Clean up the response to prevent self-conversation
+	cleanResponse := l.cleanResponse(ollamaResp.Response)
+	
+	return cleanResponse, nil
+}
+
+// cleanResponse removes unwanted patterns from LLM responses
+func (l *LLMService) cleanResponse(response string) string {
+	// Trim whitespace
+	response = strings.TrimSpace(response)
+	
+	// Stop at common conversation continuation patterns
+	stopPatterns := []string{
+		"\n\nHuman:",
+		"\nHuman:",
+		"\n\nUser:",
+		"\nUser:",
+		"\n\nQ:",
+		"\nQ:",
+		"\n\nQuestion:",
+	}
+	
+	for _, pattern := range stopPatterns {
+		if idx := strings.Index(response, pattern); idx != -1 {
+			response = response[:idx]
+		}
+	}
+	
+	// Remove trailing punctuation that might indicate continuation
+	response = strings.TrimRight(response, ".,!?;:")
+	response = strings.TrimSpace(response)
+	
+	// Limit length as final safeguard (about 2-3 sentences)
+	if len(response) > 300 {
+		// Try to cut at sentence boundary
+		sentences := strings.Split(response, ". ")
+		if len(sentences) > 2 {
+			response = strings.Join(sentences[:2], ". ") + "."
+		} else {
+			// Hard cut if no sentence boundaries
+			response = response[:297] + "..."
+		}
+	}
+	
+	return response
 }
 
 // buildPrompt constructs a prompt for the LLM with context and history
 func (l *LLMService) buildPrompt(message string, context []string, history []models.ChatMessage) string {
 	var prompt bytes.Buffer
 
-	// System prompt
-	prompt.WriteString("You are a helpful AI assistant that answers questions based on provided context. ")
-	prompt.WriteString("Use the context information to provide accurate and relevant answers. ")
-	prompt.WriteString("If the context doesn't contain relevant information, say so and provide a general helpful response.\n\n")
+	// System prompt with clear instructions
+	prompt.WriteString("You are a helpful AI assistant. Provide concise, direct answers. ")
+	prompt.WriteString("Keep responses under 2-3 sentences unless more detail is specifically requested. ")
+	prompt.WriteString("Use provided context when relevant. ")
+	prompt.WriteString("Do not continue the conversation or ask follow-up questions.\n\n")
 
 	// Add context if available
 	if len(context) > 0 {
-		prompt.WriteString("Context information:\n")
-		for i, ctx := range context {
-			prompt.WriteString(fmt.Sprintf("%d. %s\n", i+1, ctx))
+		prompt.WriteString("Context:\n")
+		for _, ctx := range context {
+			prompt.WriteString(fmt.Sprintf("- %s\n", ctx))
 		}
 		prompt.WriteString("\n")
 	}
 
-	// Add conversation history (limit to last 6 messages to avoid token limits)
+	// Add conversation history (limit to last 4 messages to avoid token limits)
 	if len(history) > 0 {
 		prompt.WriteString("Previous conversation:\n")
 		start := 0
-		if len(history) > 6 {
-			start = len(history) - 6
+		if len(history) > 4 {
+			start = len(history) - 4
 		}
-
+		
 		for i := start; i < len(history); i++ {
 			msg := history[i]
 			if msg.Role == "user" {
@@ -141,7 +188,7 @@ func (l *LLMService) buildPrompt(message string, context []string, history []mod
 		prompt.WriteString("\n")
 	}
 
-	// Add current user message
+	// Add current user message with clear instruction
 	prompt.WriteString(fmt.Sprintf("Human: %s\n", message))
 	prompt.WriteString("Assistant: ")
 
@@ -155,7 +202,7 @@ func (l *LLMService) IsAvailable() bool {
 		return false
 	}
 	defer resp.Body.Close()
-
+	
 	return resp.StatusCode == http.StatusOK
 }
 

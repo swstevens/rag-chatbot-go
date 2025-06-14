@@ -2,7 +2,9 @@ package services
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -13,13 +15,36 @@ import (
 type Chatbot struct {
 	initialized bool
 	startTime   time.Time
+	llmService  *LLMService
+	useLLM      bool
 }
 
 // NewChatbot creates a new chatbot instance
 func NewChatbot() *Chatbot {
+	// Initialize LLM service
+	llmBaseURL := os.Getenv("LLM_BASE_URL")
+	llmModel := os.Getenv("LLM_MODEL")
+	llmService := NewLLMService(llmBaseURL, llmModel)
+
+	// Check if LLM is available (but don't let this determine behavior)
+	initialLLMCheck := llmService.IsAvailable()
+	if initialLLMCheck {
+		log.Printf("LLM service detected! Model: %s", llmService.GetModel())
+		log.Printf("Will attempt to use LLM for all responses with fallback to dummy responses")
+	} else {
+		log.Printf("LLM service not detected at startup (URL: %s)", llmService.baseURL)
+		log.Printf("Will still attempt LLM for each message - may succeed if Ollama starts later")
+		log.Printf("To enable LLM:")
+		log.Printf("1. Install Ollama: https://ollama.ai")
+		log.Printf("2. Run: ollama serve")
+		log.Printf("3. Pull a model: ollama pull %s", llmService.GetModel())
+	}
+
 	return &Chatbot{
 		initialized: true,
 		startTime:   time.Now(),
+		llmService:  llmService,
+		useLLM:      true, // Always try LLM, regardless of initial check
 	}
 }
 
@@ -28,14 +53,30 @@ func (c *Chatbot) ProcessMessage(message string, sessionID string, history []mod
 	// Clean the input message
 	message = strings.TrimSpace(message)
 
-	// Generate dummy response
-	response := c.generateDummyResponse(message, len(history))
+	var response string
+	var usedLLM bool
 
-	// Create response with dummy context
-	context := c.generateDummyContext(message)
+	// ALWAYS try LLM first, regardless of startup state
+	context := c.generateDummyContext(message) // Phase 4 will replace with real search
+
+	llmResponse, err := c.llmService.GenerateResponse(message, context, history)
+	if err != nil {
+		// LLM failed, log and fall back to dummy
+		log.Printf("LLM generation failed: %v, using dummy response", err)
+		response = c.generateDummyResponse(message, len(history))
+		usedLLM = false
+	} else {
+		// LLM succeeded
+		response = llmResponse
+		usedLLM = true
+		// Update our state to reflect LLM is working
+		c.useLLM = true
+	}
+
+	// Create response with context and sources
 	sources := c.generateDummySources()
 
-	return models.ChatResponse{
+	chatResponse := models.ChatResponse{
 		Message:   response,
 		SessionID: sessionID,
 		Context:   context,
@@ -43,53 +84,56 @@ func (c *Chatbot) ProcessMessage(message string, sessionID string, history []mod
 		Status:    "success",
 		Timestamp: time.Now(),
 	}
+
+	// Add metadata about which system was used
+	if usedLLM {
+		log.Printf("Response generated using LLM model: %s", c.llmService.GetModel())
+	} else {
+		log.Printf("Response generated using dummy fallback")
+	}
+
+	return chatResponse
 }
 
-// generateDummyResponse creates a dummy response based on the user message
+// generateDummyResponse creates a dummy response based on the user message (fallback)
 func (c *Chatbot) generateDummyResponse(message string, historyLength int) string {
 	message = strings.ToLower(message)
 
 	// Response patterns based on message content
 	if strings.Contains(message, "hello") || strings.Contains(message, "hi") || strings.Contains(message, "hey") {
 		greetings := []string{
-			"Hello! I'm a dummy chatbot response. Soon I'll be powered by real RAG technology!",
-			"Hi there! I'm currently using mock responses, but I'm learning to search documents.",
-			"Hey! I'm in Phase 3 development - dummy responses for now, but real AI coming soon!",
+			"Hello! I'm your RAG chatbot. I can use local LLM models when available!",
+			"Hi there! I'm powered by local AI when possible, with smart fallbacks.",
+			"Hey! I'm in Phase 3+ development - now with LLM integration capabilities!",
 		}
 		return greetings[rand.Intn(len(greetings))]
 	}
 
-	if strings.Contains(message, "how") && (strings.Contains(message, "are") || strings.Contains(message, "you")) {
-		return "I'm doing great! I'm a chatbot in development. I can't search documents yet, but I'm working on it!"
-	}
-
-	if strings.Contains(message, "what") && strings.Contains(message, "can") {
-		return "Right now I can only give you dummy responses! But soon I'll be able to search through documents and give you real answers based on your content."
+	if strings.Contains(message, "llm") || strings.Contains(message, "model") {
+		if c.useLLM {
+			return fmt.Sprintf("I'm currently using the local LLM model: %s. It's working great!", c.llmService.GetModel())
+		} else {
+			return "I can use local LLM models like Llama2 via Ollama, but none are currently available. I'm using smart dummy responses instead!"
+		}
 	}
 
 	if strings.Contains(message, "document") || strings.Contains(message, "file") || strings.Contains(message, "search") {
-		return "I see you're asking about documents! That's exactly what I'm being built for. Once my document processing is complete, I'll be able to search through your files and provide relevant information."
+		return "I'm designed for document search and RAG! Right now I'm using dummy context, but I'll soon be able to search through your actual documents and use that information with my LLM."
 	}
 
 	if strings.Contains(message, "rag") || strings.Contains(message, "retrieval") {
-		return "You mentioned RAG! That's my specialty (or will be). RAG stands for Retrieval-Augmented Generation - I'll search documents and use that context to give better answers."
+		return "RAG (Retrieval-Augmented Generation) is my specialty! I combine document search with AI generation. Currently using simulated retrieval, but real document processing is coming in Phase 4!"
 	}
 
-	if strings.Contains(message, "help") {
-		return "I'd love to help! Right now I'm just giving dummy responses, but I'm being developed to become a RAG chatbot that can search through documents and provide intelligent answers."
-	}
-
-	// Progressive responses based on conversation length
-	if historyLength == 0 {
-		return fmt.Sprintf("Thanks for your message: \"%s\". I'm a dummy chatbot right now, but I'm learning! This is message #%d in our conversation.", message, historyLength+1)
-	} else if historyLength < 3 {
-		return fmt.Sprintf("I see this is message #%d! You said: \"%s\". I'm still giving dummy responses, but each message helps me understand the conversation flow.", historyLength+1, message)
+	// Default response with LLM status
+	if c.useLLM {
+		return fmt.Sprintf("I received your message: \"%s\". I'm using local LLM (%s) with dummy document context. Real document search coming soon!", message, c.llmService.GetModel())
 	} else {
-		return fmt.Sprintf("We're really chatting now! (Message #%d) About your message \"%s\" - I'm practicing conversation handling. Soon I'll have real document search capabilities!", historyLength+1, message)
+		return fmt.Sprintf("I received your message: \"%s\". I'm using dummy responses since no local LLM is available. Install Ollama to enable AI responses!", message)
 	}
 }
 
-// generateDummyContext creates dummy context snippets
+// generateDummyContext creates dummy context snippets (Phase 4 will replace with real search)
 func (c *Chatbot) generateDummyContext(message string) []string {
 	contexts := []string{
 		"[Dummy Context] This would normally be a relevant snippet from your documents...",
@@ -111,7 +155,7 @@ func (c *Chatbot) generateDummyContext(message string) []string {
 	return contexts[:numContexts]
 }
 
-// generateDummySources creates dummy source file names
+// generateDummySources creates dummy source file names (Phase 4 will replace with real files)
 func (c *Chatbot) generateDummySources() []string {
 	sources := []string{
 		"dummy-document-1.txt",
@@ -136,23 +180,47 @@ func (c *Chatbot) generateDummySources() []string {
 
 // GetStatus returns the current status of the chatbot
 func (c *Chatbot) GetStatus() map[string]interface{} {
-	return map[string]interface{}{
-		"status":      "active",
-		"mode":        "dummy_responses",
-		"initialized": c.initialized,
-		"uptime":      time.Since(c.startTime).String(),
-		"phase":       "3",
-		"capabilities": []string{
-			"dummy_responses",
+	// Check current LLM availability (real-time check)
+	currentLLMAvailable := c.llmService.IsAvailable()
+
+	status := map[string]interface{}{
+		"status":         "active",
+		"mode":           "always_try_llm",
+		"initialized":    c.initialized,
+		"uptime":         time.Since(c.startTime).String(),
+		"phase":          "3+",
+		"llm_preference": "always_attempt",
+	}
+
+	if currentLLMAvailable {
+		status["capabilities"] = []string{
+			"local_llm_responses",
 			"conversation_tracking",
 			"context_simulation",
-		},
-		"coming_soon": []string{
-			"document_processing",
-			"real_search",
-			"llm_integration",
-		},
+			"smart_fallback",
+		}
+		status["llm_status"] = c.llmService.GetStatus()
+	} else {
+		status["capabilities"] = []string{
+			"llm_retry_each_message",
+			"conversation_tracking",
+			"context_simulation",
+			"dummy_fallback",
+		}
+		status["llm_status"] = map[string]interface{}{
+			"status":       "unavailable_now",
+			"note":         "Will retry LLM on each message - start Ollama to enable",
+			"target_model": c.llmService.GetModel(),
+		}
 	}
+
+	status["coming_soon"] = []string{
+		"document_processing",
+		"real_search",
+		"full_rag_pipeline",
+	}
+
+	return status
 }
 
 // IsReady checks if the chatbot is ready to process messages
@@ -164,4 +232,14 @@ func (c *Chatbot) IsReady() bool {
 func (c *Chatbot) Reset() {
 	c.startTime = time.Now()
 	c.initialized = true
+	c.useLLM = c.llmService.IsAvailable()
+}
+
+// RefreshLLMConnection attempts to reconnect to the LLM service
+func (c *Chatbot) RefreshLLMConnection() bool {
+	c.useLLM = c.llmService.IsAvailable()
+	if c.useLLM {
+		log.Printf("LLM service reconnected! Using model: %s", c.llmService.GetModel())
+	}
+	return c.useLLM
 }

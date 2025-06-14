@@ -8,16 +8,22 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"chatbot/models"
+	"chatbot/services"
 )
 
 // Controller handles all the business logic (extracted from main.go Server methods)
-type Controller struct{}
+type Controller struct {
+	chatbot *services.Chatbot
+}
 
 // NewController creates a new controller instance
 func NewController() *Controller {
-	return &Controller{}
+	return &Controller{
+		chatbot: services.NewChatbot(),
+	}
 }
 
 // IndexHandler serves our main HTML page (extracted from main.go)
@@ -74,16 +80,63 @@ func (c *Controller) HelloHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ChatHandler processes chat requests using the chatbot service
+func (c *Controller) ChatHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req models.ChatRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(models.ChatResponse{
+			Message: "Invalid JSON format",
+			Status:  "error",
+		})
+		return
+	}
+
+	// Validate message
+	if strings.TrimSpace(req.Message) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(models.ChatResponse{
+			Message: "Message cannot be empty",
+			Status:  "error",
+		})
+		return
+	}
+
+	// Generate session ID if not provided
+	if req.SessionID == "" {
+		req.SessionID = c.generateSessionID()
+	}
+
+	// Process message through chatbot service
+	response := c.chatbot.ProcessMessage(req.Message, req.SessionID, req.History)
+
+	// Return JSON response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
 // HealthHandler provides a health check endpoint (extracted from main.go)
 func (c *Controller) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
+	chatbotStatus := c.chatbot.GetStatus()
+
 	health := map[string]interface{}{
 		"status":    "healthy",
-		"phase":     "2",
-		"component": "mvc-with-views",
-		"endpoints": []string{"/", "/hello", "/health"},
+		"phase":     "3",
+		"component": "mvc-with-chatbot",
+		"endpoints": []string{"/", "/hello", "/chat", "/health"},
+		"chatbot":   chatbotStatus,
 	}
 
 	json.NewEncoder(w).Encode(health)
@@ -139,4 +192,10 @@ func (c *Controller) processHelloRequest(req models.HelloRequest) models.HelloRe
 		Response: responseText,
 		Status:   "success",
 	}
+}
+
+// generateSessionID creates a simple session ID
+func (c *Controller) generateSessionID() string {
+	// Simple session ID generation - in production, use proper UUID
+	return fmt.Sprintf("sess_%d", time.Now().UnixNano())
 }

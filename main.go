@@ -22,15 +22,19 @@ type Server struct {
 	port          string
 	controller    *controllers.Controller
 	enableDiscord bool
+	enableSearch  bool
+	llmProvider   services.LLMProvider
 }
 
 // NewServer creates a new server instance with MVC structure
-func NewServer(port string, enableDiscord bool, llmProvider services.LLMProvider) *Server {
+func NewServer(port string, enableDiscord bool, llmProvider services.LLMProvider, enableSearch bool) *Server {
 	return &Server{
 		router:        mux.NewRouter(),
 		port:          port,
-		controller:    controllers.NewController(llmProvider),
+		controller:    controllers.NewController(llmProvider, enableSearch),
 		enableDiscord: enableDiscord,
+		enableSearch:  enableSearch,
+		llmProvider:   llmProvider,
 	}
 }
 
@@ -78,6 +82,14 @@ func (s *Server) Start() error {
 		log.Printf("🤖 Discord bot: Disabled (use --discord flag to enable)")
 	}
 
+	log.Printf("🧠 LLM Provider: %s", getLLMProviderDescription(s.llmProvider))
+
+	if s.enableSearch {
+		log.Printf("🔍 Web Search: Enabled (Brave Search API)")
+	} else {
+		log.Printf("🔍 Web Search: Disabled (use --search flag to enable)")
+	}
+
 	return http.ListenAndServe(s.port, handler)
 }
 
@@ -85,6 +97,37 @@ func (s *Server) Start() error {
 func (s *Server) Stop() error {
 	log.Printf("Stopping services...")
 	return s.controller.StopServices()
+}
+
+// GetConfig returns the current server configuration
+func (s *Server) GetConfig() map[string]interface{} {
+	return map[string]interface{}{
+		"port":          s.port,
+		"discord":       s.enableDiscord,
+		"search":        s.enableSearch,
+		"llm_provider":  string(s.llmProvider),
+		"provider_desc": getLLMProviderDescription(s.llmProvider),
+	}
+}
+
+// IsDiscordEnabled returns whether Discord is enabled
+func (s *Server) IsDiscordEnabled() bool {
+	return s.enableDiscord
+}
+
+// IsSearchEnabled returns whether web search is enabled
+func (s *Server) IsSearchEnabled() bool {
+	return s.enableSearch
+}
+
+// GetLLMProvider returns the current LLM provider
+func (s *Server) GetLLMProvider() services.LLMProvider {
+	return s.llmProvider
+}
+
+// GetPort returns the server port
+func (s *Server) GetPort() string {
+	return s.port
 }
 
 func main() {
@@ -95,10 +138,11 @@ func main() {
 
 	// Define command-line flags
 	var (
-		port          = flag.String("port", ":8000", "Port to run the server on (e.g., :8000)")
+		port          = flag.String("port", ":8080", "Port to run the server on (e.g., :8080)")
 		enableDiscord = flag.Bool("discord", false, "Enable Discord bot service")
 		useChatGPT    = flag.Bool("chatgpt", false, "Use ChatGPT instead of local LLM")
 		useLocal      = flag.Bool("local", false, "Force use of local LLM (Ollama)")
+		enableSearch  = flag.Bool("search", false, "Enable web search for ChatGPT (requires Brave Search API)")
 		showHelp      = flag.Bool("help", false, "Show help information")
 	)
 	flag.Parse()
@@ -127,22 +171,23 @@ func main() {
 	}
 
 	// Create server with MVC structure
-	server := NewServer(*port, *enableDiscord, llmProvider)
+	server := NewServer(*port, *enableDiscord, llmProvider, *enableSearch)
 
-	log.Printf("Phase 3+: Multi-Service Architecture with Multi-Provider LLM")
+	log.Printf("Phase 3+: Multi-Service Architecture with Multi-Provider LLM + Web Search")
 	log.Printf("✅ Models: Request/Response structures")
 	log.Printf("✅ Views: Template system")
 	log.Printf("✅ Controllers: HTTP handling + Service orchestration")
-	log.Printf("✅ Services: Chatbot + Local LLM + ChatGPT + Discord (optional)")
+	log.Printf("✅ Services: Chatbot + Local LLM + ChatGPT + Discord + Web Search (optional)")
 	log.Printf("⏳ Next: Document processing and real RAG")
 
 	// Show current configuration
 	log.Printf("Configuration:")
-	log.Printf("  Port: %s", *port)
-	log.Printf("  Discord: %v", *enableDiscord)
-	log.Printf("  LLM Provider: %s", getLLMProviderDescription(llmProvider))
+	log.Printf("  Port: %s", server.port)
+	log.Printf("  Discord: %v", server.enableDiscord)
+	log.Printf("  LLM Provider: %s", getLLMProviderDescription(server.llmProvider))
+	log.Printf("  Web Search: %v", server.enableSearch)
 
-	if *enableDiscord {
+	if server.enableDiscord {
 		if os.Getenv("DISCORD_BOT_TOKEN") == "" {
 			log.Printf("  ⚠️  DISCORD_BOT_TOKEN not set - Discord will be disabled")
 		} else {
@@ -153,13 +198,23 @@ func main() {
 		}
 	}
 
-	if *useChatGPT || llmProvider == services.ProviderChatGPT {
+	if server.llmProvider == services.ProviderChatGPT || (*useChatGPT && server.llmProvider == "") {
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			log.Printf("  ⚠️  OPENAI_API_KEY not set - ChatGPT will not be available")
 		} else {
 			apiKey := os.Getenv("OPENAI_API_KEY")
 			masked := maskToken(apiKey)
 			log.Printf("  ✅ OPENAI_API_KEY loaded: %s", masked)
+		}
+	}
+
+	if server.enableSearch {
+		if os.Getenv("BRAVE_SEARCH_API_KEY") == "" {
+			log.Printf("  ⚠️  BRAVE_SEARCH_API_KEY not set - Web search will not be available")
+		} else {
+			apiKey := os.Getenv("BRAVE_SEARCH_API_KEY")
+			masked := maskToken(apiKey)
+			log.Printf("  ✅ BRAVE_SEARCH_API_KEY loaded: %s", masked)
 		}
 	}
 
@@ -214,10 +269,11 @@ func showUsage() {
 	log.Printf("  go run main.go [flags]")
 	log.Printf("")
 	log.Printf("Flags:")
-	log.Printf("  --port string      Port to run the server on (default \":8000\")")
+	log.Printf("  --port string      Port to run the server on (default \":8080\")")
 	log.Printf("  --discord          Enable Discord bot service (default false)")
 	log.Printf("  --chatgpt          Use ChatGPT as primary LLM provider (default false)")
 	log.Printf("  --local            Force use of local LLM/Ollama (default false)")
+	log.Printf("  --search           Enable web search for ChatGPT (default false)")
 	log.Printf("  --help             Show this help information")
 	log.Printf("")
 	log.Printf("LLM Provider Selection:")
@@ -232,6 +288,7 @@ func showUsage() {
 	log.Printf("  OPENAI_API_KEY          OpenAI API key (required for ChatGPT)")
 	log.Printf("  OPENAI_MODEL            OpenAI model (default \"gpt-3.5-turbo\")")
 	log.Printf("  OPENAI_BASE_URL         OpenAI API URL (default \"https://api.openai.com/v1\")")
+	log.Printf("  BRAVE_SEARCH_API_KEY    Brave Search API key (required for web search)")
 	log.Printf("  LLM_BASE_URL           Local LLM URL (default \"http://localhost:11434\")")
 	log.Printf("  LLM_MODEL              Local LLM model (default \"tinyllama\")")
 	log.Printf("")
@@ -239,6 +296,7 @@ func showUsage() {
 	log.Printf("  Create a .env file in the project root with:")
 	log.Printf("  DISCORD_BOT_TOKEN=your_discord_bot_token_here")
 	log.Printf("  OPENAI_API_KEY=sk-your_openai_api_key_here")
+	log.Printf("  BRAVE_SEARCH_API_KEY=your_brave_search_api_key_here")
 	log.Printf("  DISCORD_COMMAND_PREFIX=!chat ")
 	log.Printf("  OPENAI_MODEL=gpt-3.5-turbo")
 	log.Printf("  LLM_MODEL=tinyllama")
@@ -247,7 +305,8 @@ func showUsage() {
 	log.Printf("  go run main.go                              # Auto-detect LLM, HTTP only")
 	log.Printf("  go run main.go --discord                    # Auto-detect LLM, Discord enabled")
 	log.Printf("  go run main.go --chatgpt                    # Force ChatGPT, HTTP only")
-	log.Printf("  go run main.go --chatgpt --discord          # ChatGPT + Discord")
+	log.Printf("  go run main.go --chatgpt --search           # ChatGPT with web search")
+	log.Printf("  go run main.go --chatgpt --discord --search # ChatGPT + Discord + Search")
 	log.Printf("  go run main.go --local                      # Force local LLM")
 	log.Printf("  go run main.go --local --discord --port :3000  # Local LLM + Discord + custom port")
 	log.Printf("")
@@ -264,6 +323,13 @@ func showUsage() {
 	log.Printf("  1. Get API key from https://platform.openai.com/api-keys")
 	log.Printf("  2. Add to .env: OPENAI_API_KEY=sk-your_key_here")
 	log.Printf("  3. Run with --chatgpt flag")
+	log.Printf("  4. Optional: Add --search flag for web search capability")
+	log.Printf("")
+	log.Printf("Web Search Setup:")
+	log.Printf("  1. Get API key from https://brave.com/search/api/")
+	log.Printf("  2. Add to .env: BRAVE_SEARCH_API_KEY=your_key_here")
+	log.Printf("  3. Run with --chatgpt --search flags")
+	log.Printf("  4. ChatGPT will automatically search for current topics")
 	log.Printf("")
 	log.Printf("Local LLM Setup:")
 	log.Printf("  1. Install Ollama: https://ollama.ai")

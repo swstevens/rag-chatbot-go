@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"chatbot/models"
@@ -14,10 +16,11 @@ import (
 
 // ChatGPTService handles communication with OpenAI's ChatGPT API
 type ChatGPTService struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	httpClient *http.Client
+	apiKey        string
+	baseURL       string
+	model         string
+	httpClient    *http.Client
+	searchService *SearchService
 }
 
 // ChatGPTRequest represents a request to the ChatGPT API
@@ -62,7 +65,7 @@ type ChatGPTResponse struct {
 }
 
 // NewChatGPTService creates a new ChatGPT service instance
-func NewChatGPTService() *ChatGPTService {
+func NewChatGPTService(enableSearch bool) *ChatGPTService {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	baseURL := os.Getenv("OPENAI_BASE_URL")
 	model := os.Getenv("OPENAI_MODEL")
@@ -74,6 +77,11 @@ func NewChatGPTService() *ChatGPTService {
 		model = "gpt-3.5-turbo" // Default to most cost-effective model
 	}
 
+	var searchService *SearchService
+	if enableSearch {
+		searchService = NewSearchService()
+	}
+
 	return &ChatGPTService{
 		apiKey:  apiKey,
 		baseURL: baseURL,
@@ -81,6 +89,7 @@ func NewChatGPTService() *ChatGPTService {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		searchService: searchService,
 	}
 }
 
@@ -90,8 +99,23 @@ func (c *ChatGPTService) GenerateResponse(message string, context []string, hist
 		return "", fmt.Errorf("OpenAI API key not set")
 	}
 
+	// Check if we should search for current information
+	var searchContext []string
+	if c.searchService != nil && c.searchService.IsEnabled() && c.searchService.ShouldSearch(message) {
+		searchResults, err := c.searchService.SearchForContext(message, 3)
+		if err != nil {
+			log.Printf("Search failed: %v", err)
+		} else if len(searchResults) > 0 {
+			searchContext = searchResults
+			log.Printf("Added %d search results to context", len(searchResults))
+		}
+	}
+
+	// Combine document context and search context
+	allContext := append(context, searchContext...)
+
 	// Build messages for ChatGPT format
-	messages := c.buildMessages(message, context, history)
+	messages := c.buildMessages(message, allContext, history)
 
 	// Create request
 	request := ChatGPTRequest{
@@ -169,6 +193,19 @@ func (c *ChatGPTService) buildMessages(message string, context []string, history
 		systemPrompt += "\n\nContext:\n"
 		for _, ctx := range context {
 			systemPrompt += "- " + ctx + "\n"
+		}
+
+		// If search results are included, mention they're current
+		hasSearchResults := false
+		for _, ctx := range context {
+			if strings.Contains(ctx, "[Search Result") {
+				hasSearchResults = true
+				break
+			}
+		}
+
+		if hasSearchResults {
+			systemPrompt += "\nNote: Some context includes current web search results for up-to-date information."
 		}
 	}
 
@@ -248,6 +285,18 @@ func (c *ChatGPTService) GetStatus() map[string]interface{} {
 	} else {
 		status["status"] = "unavailable"
 		status["error"] = "OPENAI_API_KEY not set"
+	}
+
+	// Add search capability status
+	if c.searchService != nil {
+		status["search"] = c.searchService.GetStatus()
+		status["search_enabled"] = c.searchService.IsEnabled()
+	} else {
+		status["search"] = map[string]interface{}{
+			"status": "disabled",
+			"note":   "Search not enabled for this instance",
+		}
+		status["search_enabled"] = false
 	}
 
 	return status

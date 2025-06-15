@@ -32,7 +32,7 @@ type Chatbot struct {
 }
 
 // NewChatbot creates a new chatbot instance with specified provider preference
-func NewChatbot(preferredProvider LLMProvider) *Chatbot {
+func NewChatbot(preferredProvider LLMProvider, enableSearch bool) *Chatbot {
 	var llmService *LLMService
 	var chatgptService *ChatGPTService
 	var currentProvider LLMProvider
@@ -44,13 +44,17 @@ func NewChatbot(preferredProvider LLMProvider) *Chatbot {
 	switch preferredProvider {
 	case ProviderChatGPT:
 		// ChatGPT-only mode: Skip Ollama entirely
-		chatgptService = NewChatGPTService()
+		chatgptService = NewChatGPTService(enableSearch)
 
 		if chatgptService.IsAvailable() {
 			currentProvider = ProviderChatGPT
 			providerCache[ProviderChatGPT] = true
 			providerCache[ProviderLocal] = false
-			log.Printf("ChatGPT-only mode: Using model %s", chatgptService.GetModel())
+			searchStatus := "disabled"
+			if enableSearch && chatgptService.searchService != nil && chatgptService.searchService.IsEnabled() {
+				searchStatus = "enabled"
+			}
+			log.Printf("ChatGPT-only mode: Using model %s, search %s", chatgptService.GetModel(), searchStatus)
 		} else {
 			currentProvider = ProviderDummy
 			providerCache[ProviderChatGPT] = false
@@ -68,6 +72,9 @@ func NewChatbot(preferredProvider LLMProvider) *Chatbot {
 			providerCache[ProviderLocal] = true
 			providerCache[ProviderChatGPT] = false
 			log.Printf("Local LLM-only mode: Using model %s", llmService.GetModel())
+			if enableSearch {
+				log.Printf("Note: Search not available in Local LLM-only mode")
+			}
 		} else {
 			currentProvider = ProviderDummy
 			providerCache[ProviderLocal] = false
@@ -79,7 +86,7 @@ func NewChatbot(preferredProvider LLMProvider) *Chatbot {
 	default:
 		// Auto-detect: Initialize both services
 		llmService = NewLLMService("", "")
-		chatgptService = NewChatGPTService()
+		chatgptService = NewChatGPTService(enableSearch)
 
 		localAvailable := llmService.IsAvailable()
 		chatgptAvailable := chatgptService.IsAvailable()
@@ -93,7 +100,11 @@ func NewChatbot(preferredProvider LLMProvider) *Chatbot {
 			log.Printf("Auto-detected local LLM: %s", llmService.GetModel())
 		} else if chatgptAvailable {
 			currentProvider = ProviderChatGPT
-			log.Printf("Auto-detected ChatGPT: %s", chatgptService.GetModel())
+			searchStatus := "disabled"
+			if enableSearch && chatgptService.searchService != nil && chatgptService.searchService.IsEnabled() {
+				searchStatus = "enabled"
+			}
+			log.Printf("Auto-detected ChatGPT: %s, search %s", chatgptService.GetModel(), searchStatus)
 		} else {
 			currentProvider = ProviderDummy
 			log.Printf("No LLM services available, using dummy responses")

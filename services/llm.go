@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"net/http"
+	"strings"
 	"time"
 
 	"chatbot/models"
@@ -22,9 +22,9 @@ type LLMService struct {
 
 // OllamaRequest represents a request to the Ollama API
 type OllamaRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	Stream bool   `json:"stream"`
+	Model   string                 `json:"model"`
+	Prompt  string                 `json:"prompt"`
+	Stream  bool                   `json:"stream"`
 	Options map[string]interface{} `json:"options,omitempty"`
 }
 
@@ -41,16 +41,16 @@ func NewLLMService(baseURL, model string) *LLMService {
 		baseURL = "http://localhost:11434" // Default Ollama URL
 	}
 	if model == "" {
-		model = "tinyllama"
+		model = "tinyllama" // Optimized for 2GB Raspberry Pi
 	}
 
 	return &LLMService{
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second, // Longer timeout for Pi
+			Timeout: 60 * time.Second, // Faster timeout for smaller model
 		},
-		timeout: 120 * time.Second,
+		timeout: 60 * time.Second,
 	}
 }
 
@@ -58,19 +58,19 @@ func NewLLMService(baseURL, model string) *LLMService {
 func (l *LLMService) GenerateResponse(message string, context []string, history []models.ChatMessage) (string, error) {
 	// Build the prompt with context and history
 	prompt := l.buildPrompt(message, context, history)
-	
+
 	// Create request with tighter controls
 	request := OllamaRequest{
 		Model:  l.model,
 		Prompt: prompt,
 		Stream: false,
 		Options: map[string]interface{}{
-			"temperature":     0.7,
-			"max_tokens":      150,  // Much shorter responses
-			"top_p":           0.9,
-			"repeat_penalty":  1.2,  // Prevent repetition
-			"num_ctx":         1024, // Smaller context window for Pi
-			"stop":            []string{"\n\nHuman:", "\nHuman:", "User:", "\n\n"}, // Stop tokens
+			"temperature":    0.7,
+			"max_tokens":     150, // Much shorter responses
+			"top_p":          0.9,
+			"repeat_penalty": 1.2,                                                 // Prevent repetition
+			"num_ctx":        1024,                                                // Smaller context window for Pi
+			"stop":           []string{"\n\nHuman:", "\nHuman:", "User:", "\n\n"}, // Stop tokens
 		},
 	}
 
@@ -105,15 +105,20 @@ func (l *LLMService) GenerateResponse(message string, context []string, history 
 
 	// Clean up the response to prevent self-conversation
 	cleanResponse := l.cleanResponse(ollamaResp.Response)
-	
+
 	return cleanResponse, nil
 }
 
 // cleanResponse removes unwanted patterns from LLM responses
 func (l *LLMService) cleanResponse(response string) string {
+	return cleanLLMResponse(response)
+}
+
+// cleanLLMResponse is a shared function for cleaning LLM responses
+func cleanLLMResponse(response string) string {
 	// Trim whitespace
 	response = strings.TrimSpace(response)
-	
+
 	// Stop at common conversation continuation patterns
 	stopPatterns := []string{
 		"\n\nHuman:",
@@ -124,17 +129,17 @@ func (l *LLMService) cleanResponse(response string) string {
 		"\nQ:",
 		"\n\nQuestion:",
 	}
-	
+
 	for _, pattern := range stopPatterns {
 		if idx := strings.Index(response, pattern); idx != -1 {
 			response = response[:idx]
 		}
 	}
-	
+
 	// Remove trailing punctuation that might indicate continuation
 	response = strings.TrimRight(response, ".,!?;:")
 	response = strings.TrimSpace(response)
-	
+
 	// Limit length as final safeguard (about 2-3 sentences)
 	if len(response) > 300 {
 		// Try to cut at sentence boundary
@@ -146,7 +151,7 @@ func (l *LLMService) cleanResponse(response string) string {
 			response = response[:297] + "..."
 		}
 	}
-	
+
 	return response
 }
 
@@ -176,7 +181,7 @@ func (l *LLMService) buildPrompt(message string, context []string, history []mod
 		if len(history) > 4 {
 			start = len(history) - 4
 		}
-		
+
 		for i := start; i < len(history); i++ {
 			msg := history[i]
 			if msg.Role == "user" {
@@ -202,7 +207,7 @@ func (l *LLMService) IsAvailable() bool {
 		return false
 	}
 	defer resp.Body.Close()
-	
+
 	return resp.StatusCode == http.StatusOK
 }
 

@@ -12,23 +12,24 @@ import (
 	"github.com/rs/cors"
 
 	"chatbot/controllers"
+	"chatbot/services"
 	"chatbot/utils"
 )
 
 // Server struct - now using MVC controller with chatbot and Discord services
 type Server struct {
-	router         *mux.Router
-	port           string
-	controller     *controllers.Controller
-	enableDiscord  bool
+	router        *mux.Router
+	port          string
+	controller    *controllers.Controller
+	enableDiscord bool
 }
 
 // NewServer creates a new server instance with MVC structure
-func NewServer(port string, enableDiscord bool) *Server {
+func NewServer(port string, enableDiscord bool, llmProvider services.LLMProvider) *Server {
 	return &Server{
 		router:        mux.NewRouter(),
 		port:          port,
-		controller:    controllers.NewController(),
+		controller:    controllers.NewController(llmProvider),
 		enableDiscord: enableDiscord,
 	}
 }
@@ -40,7 +41,7 @@ func (s *Server) setupRoutes() {
 
 	// Web interface routes
 	s.router.HandleFunc("/", s.controller.IndexHandler).Methods("GET")
-	
+
 	// API routes
 	s.router.HandleFunc("/hello", s.controller.HelloHandler).Methods("POST")
 	s.router.HandleFunc("/chat", s.controller.ChatHandler).Methods("POST")
@@ -70,7 +71,7 @@ func (s *Server) Start() error {
 	log.Printf("💬 Chat API: http://localhost%s/chat", s.port)
 	log.Printf("🔗 Hello API: http://localhost%s/hello", s.port)
 	log.Printf("❤️  Health check: http://localhost%s/health", s.port)
-	
+
 	if s.enableDiscord {
 		log.Printf("🤖 Discord bot: Enabled (check logs above for status)")
 	} else {
@@ -94,8 +95,10 @@ func main() {
 
 	// Define command-line flags
 	var (
-		port          = flag.String("port", ":8080", "Port to run the server on (e.g., :8080)")
+		port          = flag.String("port", ":8000", "Port to run the server on (e.g., :8000)")
 		enableDiscord = flag.Bool("discord", false, "Enable Discord bot service")
+		useChatGPT    = flag.Bool("chatgpt", false, "Use ChatGPT instead of local LLM")
+		useLocal      = flag.Bool("local", false, "Force use of local LLM (Ollama)")
 		showHelp      = flag.Bool("help", false, "Show help information")
 	)
 	flag.Parse()
@@ -106,25 +109,39 @@ func main() {
 		return
 	}
 
+	// Determine LLM provider based on flags
+	var llmProvider services.LLMProvider
+	if *useChatGPT && *useLocal {
+		log.Fatal("Cannot use both --chatgpt and --local flags at the same time")
+	} else if *useChatGPT {
+		llmProvider = services.ProviderChatGPT
+	} else if *useLocal {
+		llmProvider = services.ProviderLocal
+	} else {
+		llmProvider = "" // Auto-detect
+	}
+
 	// Override port from environment if set
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		*port = envPort
 	}
 
 	// Create server with MVC structure
-	server := NewServer(*port, *enableDiscord)
+	server := NewServer(*port, *enableDiscord, llmProvider)
 
-	log.Printf("Phase 3+: Multi-Service Architecture")
+	log.Printf("Phase 3+: Multi-Service Architecture with Multi-Provider LLM")
 	log.Printf("✅ Models: Request/Response structures")
 	log.Printf("✅ Views: Template system")
 	log.Printf("✅ Controllers: HTTP handling + Service orchestration")
-	log.Printf("✅ Services: Chatbot + LLM + Discord (optional)")
+	log.Printf("✅ Services: Chatbot + Local LLM + ChatGPT + Discord (optional)")
 	log.Printf("⏳ Next: Document processing and real RAG")
 
 	// Show current configuration
 	log.Printf("Configuration:")
 	log.Printf("  Port: %s", *port)
 	log.Printf("  Discord: %v", *enableDiscord)
+	log.Printf("  LLM Provider: %s", getLLMProviderDescription(llmProvider))
+
 	if *enableDiscord {
 		if os.Getenv("DISCORD_BOT_TOKEN") == "" {
 			log.Printf("  ⚠️  DISCORD_BOT_TOKEN not set - Discord will be disabled")
@@ -133,6 +150,16 @@ func main() {
 			token := os.Getenv("DISCORD_BOT_TOKEN")
 			masked := maskToken(token)
 			log.Printf("  ✅ DISCORD_BOT_TOKEN loaded: %s", masked)
+		}
+	}
+
+	if *useChatGPT || llmProvider == services.ProviderChatGPT {
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			log.Printf("  ⚠️  OPENAI_API_KEY not set - ChatGPT will not be available")
+		} else {
+			apiKey := os.Getenv("OPENAI_API_KEY")
+			masked := maskToken(apiKey)
+			log.Printf("  ✅ OPENAI_API_KEY loaded: %s", masked)
 		}
 	}
 
@@ -150,13 +177,25 @@ func main() {
 	// Wait for interrupt signal
 	<-c
 	log.Printf("Received shutdown signal...")
-	
+
 	// Graceful shutdown
 	if err := server.Stop(); err != nil {
 		log.Printf("Error during shutdown: %v", err)
 	}
-	
+
 	log.Printf("Server stopped gracefully")
+}
+
+// getLLMProviderDescription returns a human-readable description of the LLM provider
+func getLLMProviderDescription(provider services.LLMProvider) string {
+	switch provider {
+	case services.ProviderChatGPT:
+		return "ChatGPT (forced)"
+	case services.ProviderLocal:
+		return "Local LLM/Ollama (forced)"
+	default:
+		return "Auto-detect (Local LLM preferred, ChatGPT fallback)"
+	}
 }
 
 // maskToken masks sensitive token for logging
@@ -169,39 +208,66 @@ func maskToken(token string) string {
 
 // showUsage displays help information
 func showUsage() {
-	log.Printf("RAG Chatbot Server - Multi-Service Architecture")
+	log.Printf("RAG Chatbot Server - Multi-Service Architecture with Multi-Provider LLM")
 	log.Printf("")
 	log.Printf("Usage:")
 	log.Printf("  go run main.go [flags]")
 	log.Printf("")
 	log.Printf("Flags:")
-	log.Printf("  --port string      Port to run the server on (default \":8080\")")
+	log.Printf("  --port string      Port to run the server on (default \":8000\")")
 	log.Printf("  --discord          Enable Discord bot service (default false)")
+	log.Printf("  --chatgpt          Use ChatGPT as primary LLM provider (default false)")
+	log.Printf("  --local            Force use of local LLM/Ollama (default false)")
 	log.Printf("  --help             Show this help information")
+	log.Printf("")
+	log.Printf("LLM Provider Selection:")
+	log.Printf("  (no flags)         Auto-detect: Local LLM preferred, ChatGPT fallback")
+	log.Printf("  --local            Force local LLM (Ollama), ChatGPT fallback")
+	log.Printf("  --chatgpt          Force ChatGPT, local LLM fallback")
 	log.Printf("")
 	log.Printf("Environment Variables (.env file or system):")
 	log.Printf("  PORT                    Override the port (e.g., :3000)")
 	log.Printf("  DISCORD_BOT_TOKEN       Discord bot token (required for Discord)")
 	log.Printf("  DISCORD_COMMAND_PREFIX  Discord command prefix (default \"!chat \")")
-	log.Printf("  LLM_BASE_URL           LLM service URL (default \"http://localhost:11434\")")
-	log.Printf("  LLM_MODEL              LLM model name (default \"tinyllama\")")
+	log.Printf("  OPENAI_API_KEY          OpenAI API key (required for ChatGPT)")
+	log.Printf("  OPENAI_MODEL            OpenAI model (default \"gpt-3.5-turbo\")")
+	log.Printf("  OPENAI_BASE_URL         OpenAI API URL (default \"https://api.openai.com/v1\")")
+	log.Printf("  LLM_BASE_URL           Local LLM URL (default \"http://localhost:11434\")")
+	log.Printf("  LLM_MODEL              Local LLM model (default \"tinyllama\")")
 	log.Printf("")
 	log.Printf(".env File Setup:")
 	log.Printf("  Create a .env file in the project root with:")
-	log.Printf("  DISCORD_BOT_TOKEN=your_actual_bot_token_here")
+	log.Printf("  DISCORD_BOT_TOKEN=your_discord_bot_token_here")
+	log.Printf("  OPENAI_API_KEY=sk-your_openai_api_key_here")
 	log.Printf("  DISCORD_COMMAND_PREFIX=!chat ")
+	log.Printf("  OPENAI_MODEL=gpt-3.5-turbo")
 	log.Printf("  LLM_MODEL=tinyllama")
 	log.Printf("")
 	log.Printf("Examples:")
-	log.Printf("  go run main.go                           # HTTP server only")
-	log.Printf("  go run main.go --discord                 # HTTP server + Discord bot")
-	log.Printf("  go run main.go --port :3000              # Custom port")
-	log.Printf("  go run main.go --discord --port :3000    # Both custom port and Discord")
+	log.Printf("  go run main.go                              # Auto-detect LLM, HTTP only")
+	log.Printf("  go run main.go --discord                    # Auto-detect LLM, Discord enabled")
+	log.Printf("  go run main.go --chatgpt                    # Force ChatGPT, HTTP only")
+	log.Printf("  go run main.go --chatgpt --discord          # ChatGPT + Discord")
+	log.Printf("  go run main.go --local                      # Force local LLM")
+	log.Printf("  go run main.go --local --discord --port :3000  # Local LLM + Discord + custom port")
 	log.Printf("")
-	log.Printf("Discord Setup:")
+	log.Printf("Setup Instructions:")
+	log.Printf("")
+	log.Printf("Discord Bot Setup:")
 	log.Printf("  1. Create bot at https://discord.com/developers/applications")
-	log.Printf("  2. Get bot token and add to .env file: DISCORD_BOT_TOKEN=your_token")
+	log.Printf("  2. Get bot token and add to .env: DISCORD_BOT_TOKEN=your_token")
 	log.Printf("  3. Invite bot to your server with message permissions")
 	log.Printf("  4. Run with --discord flag")
 	log.Printf("  5. Use '!chat <message>' in Discord channels")
+	log.Printf("")
+	log.Printf("ChatGPT Setup:")
+	log.Printf("  1. Get API key from https://platform.openai.com/api-keys")
+	log.Printf("  2. Add to .env: OPENAI_API_KEY=sk-your_key_here")
+	log.Printf("  3. Run with --chatgpt flag")
+	log.Printf("")
+	log.Printf("Local LLM Setup:")
+	log.Printf("  1. Install Ollama: https://ollama.ai")
+	log.Printf("  2. Run: ollama serve")
+	log.Printf("  3. Pull model: ollama pull tinyllama")
+	log.Printf("  4. Run with --local flag (or let auto-detect)")
 }

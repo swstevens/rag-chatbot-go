@@ -21,58 +21,77 @@ const (
 
 // Chatbot handles chat processing and response generation
 type Chatbot struct {
-	initialized       bool
-	startTime         time.Time
-	llmService        *LLMService
-	chatgptService    *ChatGPTService
-	currentProvider   LLMProvider
-	preferredProvider LLMProvider
+	initialized        bool
+	startTime          time.Time
+	llmService         *LLMService
+	chatgptService     *ChatGPTService
+	currentProvider    LLMProvider
+	preferredProvider  LLMProvider
+	lastProviderCheck  time.Time
+	providerCheckCache map[LLMProvider]bool
 }
 
 // NewChatbot creates a new chatbot instance with specified provider preference
 func NewChatbot(preferredProvider LLMProvider) *Chatbot {
-	// Initialize both services
-	llmService := NewLLMService("", "")
-	chatgptService := NewChatGPTService()
-
-	// Determine which provider to use based on preference and availability
+	var llmService *LLMService
+	var chatgptService *ChatGPTService
 	var currentProvider LLMProvider
 
+	// Initialize provider cache
+	providerCache := make(map[LLMProvider]bool)
+
+	// Only initialize services we might actually use
 	switch preferredProvider {
 	case ProviderChatGPT:
+		// ChatGPT-only mode: Skip Ollama entirely
+		chatgptService = NewChatGPTService()
+
 		if chatgptService.IsAvailable() {
 			currentProvider = ProviderChatGPT
-			log.Printf("ChatGPT service available! Using model: %s", chatgptService.GetModel())
+			providerCache[ProviderChatGPT] = true
+			providerCache[ProviderLocal] = false
+			log.Printf("ChatGPT-only mode: Using model %s", chatgptService.GetModel())
 		} else {
-			log.Printf("ChatGPT service not available (missing OPENAI_API_KEY), checking local LLM...")
-			if llmService.IsAvailable() {
-				currentProvider = ProviderLocal
-				log.Printf("Falling back to local LLM: %s", llmService.GetModel())
-			} else {
-				currentProvider = ProviderDummy
-				log.Printf("No LLM services available, using dummy responses")
-			}
+			currentProvider = ProviderDummy
+			providerCache[ProviderChatGPT] = false
+			providerCache[ProviderLocal] = false
+			log.Printf("ChatGPT not available (missing OPENAI_API_KEY), using dummy responses")
+			log.Printf("No fallback to local LLM in ChatGPT-only mode")
 		}
+
 	case ProviderLocal:
+		// Local-only mode: Skip ChatGPT entirely
+		llmService = NewLLMService("", "")
+
 		if llmService.IsAvailable() {
 			currentProvider = ProviderLocal
-			log.Printf("Local LLM service available! Using model: %s", llmService.GetModel())
+			providerCache[ProviderLocal] = true
+			providerCache[ProviderChatGPT] = false
+			log.Printf("Local LLM-only mode: Using model %s", llmService.GetModel())
 		} else {
-			log.Printf("Local LLM service not available, checking ChatGPT...")
-			if chatgptService.IsAvailable() {
-				currentProvider = ProviderChatGPT
-				log.Printf("Falling back to ChatGPT: %s", chatgptService.GetModel())
-			} else {
-				currentProvider = ProviderDummy
-				log.Printf("No LLM services available, using dummy responses")
-			}
+			currentProvider = ProviderDummy
+			providerCache[ProviderLocal] = false
+			providerCache[ProviderChatGPT] = false
+			log.Printf("Local LLM not available, using dummy responses")
+			log.Printf("No fallback to ChatGPT in Local LLM-only mode")
 		}
+
 	default:
-		// Auto-detect best available (prefer local, then ChatGPT)
-		if llmService.IsAvailable() {
+		// Auto-detect: Initialize both services
+		llmService = NewLLMService("", "")
+		chatgptService = NewChatGPTService()
+
+		localAvailable := llmService.IsAvailable()
+		chatgptAvailable := chatgptService.IsAvailable()
+
+		providerCache[ProviderLocal] = localAvailable
+		providerCache[ProviderChatGPT] = chatgptAvailable
+
+		// Prefer local for speed in auto-detect mode
+		if localAvailable {
 			currentProvider = ProviderLocal
 			log.Printf("Auto-detected local LLM: %s", llmService.GetModel())
-		} else if chatgptService.IsAvailable() {
+		} else if chatgptAvailable {
 			currentProvider = ProviderChatGPT
 			log.Printf("Auto-detected ChatGPT: %s", chatgptService.GetModel())
 		} else {
@@ -81,15 +100,17 @@ func NewChatbot(preferredProvider LLMProvider) *Chatbot {
 		}
 	}
 
-	log.Printf("Chatbot initialized with provider: %s (preferred: %s)", currentProvider, preferredProvider)
+	log.Printf("Chatbot initialized: provider=%s, preferred=%s", currentProvider, preferredProvider)
 
 	return &Chatbot{
-		initialized:       true,
-		startTime:         time.Now(),
-		llmService:        llmService,
-		chatgptService:    chatgptService,
-		currentProvider:   currentProvider,
-		preferredProvider: preferredProvider,
+		initialized:        true,
+		startTime:          time.Now(),
+		llmService:         llmService,
+		chatgptService:     chatgptService,
+		currentProvider:    currentProvider,
+		preferredProvider:  preferredProvider,
+		lastProviderCheck:  time.Now(),
+		providerCheckCache: providerCache,
 	}
 }
 
@@ -122,38 +143,46 @@ func (c *Chatbot) ProcessMessage(message string, sessionID string, history []mod
 	return chatResponse
 }
 
-// generateResponse attempts to generate a response using available providers with smart fallbacks
+// generateResponse attempts to generate a response using the current provider (optimized)
 func (c *Chatbot) generateResponse(message string, context []string, history []models.ChatMessage) (string, LLMProvider) {
-	// Try current/preferred provider first
+	// Use current provider directly - no fallback checking to reduce latency
 	switch c.currentProvider {
 	case ProviderChatGPT:
+		if c.chatgptService == nil {
+			log.Printf("ChatGPT service not initialized")
+			return c.generateDummyResponse(message, len(history)), ProviderDummy
+		}
+
 		if response, err := c.chatgptService.GenerateResponse(message, context, history); err == nil {
 			return response, ProviderChatGPT
 		} else {
-			log.Printf("ChatGPT failed: %v, trying local LLM", err)
-			if response, err := c.llmService.GenerateResponse(message, context, history); err == nil {
-				return response, ProviderLocal
-			} else {
-				log.Printf("Local LLM also failed: %v, using dummy response", err)
+			log.Printf("ChatGPT failed: %v", err)
+			// In forced ChatGPT mode, don't try other providers
+			if c.preferredProvider == ProviderChatGPT {
+				log.Printf("ChatGPT-only mode: using dummy response (no fallback)")
+				return c.generateDummyResponse(message, len(history)), ProviderDummy
 			}
 		}
+
 	case ProviderLocal:
+		if c.llmService == nil {
+			log.Printf("Local LLM service not initialized")
+			return c.generateDummyResponse(message, len(history)), ProviderDummy
+		}
+
 		if response, err := c.llmService.GenerateResponse(message, context, history); err == nil {
 			return response, ProviderLocal
 		} else {
-			log.Printf("Local LLM failed: %v, trying ChatGPT", err)
-			if response, err := c.chatgptService.GenerateResponse(message, context, history); err == nil {
-				return response, ProviderChatGPT
-			} else {
-				log.Printf("ChatGPT also failed: %v, using dummy response", err)
+			log.Printf("Local LLM failed: %v", err)
+			// In forced local mode, don't try other providers
+			if c.preferredProvider == ProviderLocal {
+				log.Printf("Local LLM-only mode: using dummy response (no fallback)")
+				return c.generateDummyResponse(message, len(history)), ProviderDummy
 			}
 		}
-	case ProviderDummy:
-		// Already set to dummy mode, just use dummy response
-		return c.generateDummyResponse(message, len(history)), ProviderDummy
 	}
 
-	// All providers failed, fall back to dummy response
+	// Fast fallback to dummy - no provider switching during normal operation
 	return c.generateDummyResponse(message, len(history)), ProviderDummy
 }
 
@@ -176,10 +205,10 @@ func (c *Chatbot) generateDummyResponse(message string, historyLength int) strin
 	}
 
 	if strings.Contains(message, "chatgpt") || strings.Contains(message, "openai") {
-		if c.chatgptService.IsAvailable() {
+		if c.chatgptService != nil && c.chatgptService.IsAvailable() {
 			return "ChatGPT is available! I can use it for high-quality responses via the OpenAI API."
 		} else {
-			return "ChatGPT is not configured (missing OPENAI_API_KEY). I'm using local LLM or dummy responses instead."
+			return "ChatGPT is not configured (missing OPENAI_API_KEY) or not initialized in this mode."
 		}
 	}
 
@@ -244,7 +273,7 @@ func (c *Chatbot) generateDummySources() []string {
 func (c *Chatbot) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{
 		"status":             "active",
-		"mode":               "multi_provider",
+		"mode":               c.getStatusMode(),
 		"initialized":        c.initialized,
 		"uptime":             time.Since(c.startTime).String(),
 		"phase":              "3+",
@@ -252,19 +281,42 @@ func (c *Chatbot) GetStatus() map[string]interface{} {
 		"preferred_provider": string(c.preferredProvider),
 	}
 
-	// Add provider-specific status
-	status["providers"] = map[string]interface{}{
-		"local":   c.llmService.GetStatus(),
-		"chatgpt": c.chatgptService.GetStatus(),
+	// Add provider-specific status (only for initialized services)
+	providers := make(map[string]interface{})
+
+	if c.llmService != nil {
+		providers["local"] = c.llmService.GetStatus()
+	} else {
+		providers["local"] = map[string]interface{}{
+			"status": "not_initialized",
+			"note":   "Skipped in ChatGPT-only mode",
+		}
 	}
 
-	status["capabilities"] = []string{
-		"multi_provider_llm",
-		"automatic_fallback",
-		"conversation_tracking",
-		"context_simulation",
+	if c.chatgptService != nil {
+		providers["chatgpt"] = c.chatgptService.GetStatus()
+	} else {
+		providers["chatgpt"] = map[string]interface{}{
+			"status": "not_initialized",
+			"note":   "Skipped in Local LLM-only mode",
+		}
 	}
 
+	status["providers"] = providers
+
+	// Set capabilities based on what's actually available
+	capabilities := []string{"conversation_tracking", "context_simulation"}
+
+	switch c.preferredProvider {
+	case ProviderChatGPT:
+		capabilities = append(capabilities, "chatgpt_only", "no_ollama_resources")
+	case ProviderLocal:
+		capabilities = append(capabilities, "local_llm_only", "no_chatgpt_resources")
+	default:
+		capabilities = append(capabilities, "multi_provider_llm", "automatic_fallback")
+	}
+
+	status["capabilities"] = capabilities
 	status["coming_soon"] = []string{
 		"document_processing",
 		"real_search",
@@ -272,6 +324,50 @@ func (c *Chatbot) GetStatus() map[string]interface{} {
 	}
 
 	return status
+}
+
+// getStatusMode returns a descriptive mode string
+func (c *Chatbot) getStatusMode() string {
+	switch c.preferredProvider {
+	case ProviderChatGPT:
+		return "chatgpt_only"
+	case ProviderLocal:
+		return "local_llm_only"
+	default:
+		return "multi_provider"
+	}
+}
+
+// refreshProviderStatus checks provider availability (only in auto-detect mode)
+func (c *Chatbot) refreshProviderStatus() {
+	// Don't refresh in forced modes - they stick to their provider
+	if c.preferredProvider == ProviderChatGPT || c.preferredProvider == ProviderLocal {
+		return
+	}
+
+	c.lastProviderCheck = time.Now()
+
+	// Quick availability check (only for initialized services)
+	var localAvailable, chatgptAvailable bool
+
+	if c.llmService != nil {
+		localAvailable = c.llmService.IsAvailable()
+		c.providerCheckCache[ProviderLocal] = localAvailable
+	}
+
+	if c.chatgptService != nil {
+		chatgptAvailable = c.chatgptService.IsAvailable()
+		c.providerCheckCache[ProviderChatGPT] = chatgptAvailable
+	}
+
+	// Only switch if current provider is down and another is available
+	if c.currentProvider == ProviderLocal && !localAvailable && chatgptAvailable {
+		c.currentProvider = ProviderChatGPT
+		log.Printf("Switched to ChatGPT due to local LLM unavailability")
+	} else if c.currentProvider == ProviderChatGPT && !chatgptAvailable && localAvailable {
+		c.currentProvider = ProviderLocal
+		log.Printf("Switched to local LLM due to ChatGPT unavailability")
+	}
 }
 
 // GetCurrentProvider returns the currently active provider
@@ -288,40 +384,58 @@ func (c *Chatbot) IsReady() bool {
 func (c *Chatbot) Reset() {
 	c.startTime = time.Now()
 	c.initialized = true
+	c.lastProviderCheck = time.Now()
+
+	// Re-initialize provider cache
+	if c.providerCheckCache == nil {
+		c.providerCheckCache = make(map[LLMProvider]bool)
+	}
+
+	// Reset provider availability cache based on what's currently initialized
+	if c.llmService != nil {
+		c.providerCheckCache[ProviderLocal] = c.llmService.IsAvailable()
+	} else {
+		c.providerCheckCache[ProviderLocal] = false
+	}
+
+	if c.chatgptService != nil {
+		c.providerCheckCache[ProviderChatGPT] = c.chatgptService.IsAvailable()
+	} else {
+		c.providerCheckCache[ProviderChatGPT] = false
+	}
+
+	log.Printf("Chatbot state reset. Provider: %s, Initialized services: Local=%v, ChatGPT=%v",
+		c.currentProvider,
+		c.llmService != nil,
+		c.chatgptService != nil)
 }
 
 // RefreshProviders attempts to reconnect to all LLM services and update current provider
 func (c *Chatbot) RefreshProviders() {
-	localAvailable := c.llmService.IsAvailable()
-	chatgptAvailable := c.chatgptService.IsAvailable()
+	// Don't refresh in forced provider modes
+	if c.preferredProvider == ProviderChatGPT || c.preferredProvider == ProviderLocal {
+		log.Printf("RefreshProviders skipped in forced provider mode: %s", c.preferredProvider)
+		return
+	}
 
-	// Re-evaluate current provider based on availability and preference
-	switch c.preferredProvider {
-	case ProviderChatGPT:
-		if chatgptAvailable {
-			c.currentProvider = ProviderChatGPT
-		} else if localAvailable {
-			c.currentProvider = ProviderLocal
-		} else {
-			c.currentProvider = ProviderDummy
-		}
-	case ProviderLocal:
-		if localAvailable {
-			c.currentProvider = ProviderLocal
-		} else if chatgptAvailable {
-			c.currentProvider = ProviderChatGPT
-		} else {
-			c.currentProvider = ProviderDummy
-		}
-	default:
-		// Auto-detect
-		if localAvailable {
-			c.currentProvider = ProviderLocal
-		} else if chatgptAvailable {
-			c.currentProvider = ProviderChatGPT
-		} else {
-			c.currentProvider = ProviderDummy
-		}
+	// Only check initialized services
+	var localAvailable, chatgptAvailable bool
+
+	if c.llmService != nil {
+		localAvailable = c.llmService.IsAvailable()
+	}
+
+	if c.chatgptService != nil {
+		chatgptAvailable = c.chatgptService.IsAvailable()
+	}
+
+	// Re-evaluate current provider based on availability and preference (auto-detect only)
+	if localAvailable {
+		c.currentProvider = ProviderLocal
+	} else if chatgptAvailable {
+		c.currentProvider = ProviderChatGPT
+	} else {
+		c.currentProvider = ProviderDummy
 	}
 
 	log.Printf("Provider refreshed. Current: %s, Local: %v, ChatGPT: %v", c.currentProvider, localAvailable, chatgptAvailable)

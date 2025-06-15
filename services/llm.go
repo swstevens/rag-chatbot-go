@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -38,10 +39,10 @@ type OllamaResponse struct {
 // NewLLMService creates a new LLM service instance
 func NewLLMService(baseURL, model string) *LLMService {
 	if baseURL == "" {
-		baseURL = "http://localhost:11434" // Default Ollama URL
+		baseURL = os.Getenv("LLM_BASE_URL")
 	}
 	if model == "" {
-		model = "tinyllama" // Optimized for 2GB Raspberry Pi
+		model = os.Getenv("LLM_MODEL")
 	}
 
 	return &LLMService{

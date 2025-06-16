@@ -16,24 +16,36 @@ import (
 	"chatbot/utils"
 )
 
-// Server struct - now using MVC controller with chatbot and Discord services
+// Server struct - now with HTTPS support
 type Server struct {
 	router        *mux.Router
 	port          string
+	httpsPort     string
 	controller    *controllers.Controller
 	enableDiscord bool
 	enableSearch  bool
+	enableHTTPS   bool
+	certFile      string
+	keyFile       string
 	llmProvider   services.LLMProvider
 }
 
-// NewServer creates a new server instance with MVC structure
-func NewServer(port string, enableDiscord bool, llmProvider services.LLMProvider, enableSearch bool) *Server {
+// NewServer creates a new server instance with HTTPS support
+func NewServer(port string, httpsPort string, enableDiscord bool, llmProvider services.LLMProvider, enableSearch bool, enableHTTPS bool) *Server {
+	// Get SSL certificate paths from environment
+	certFile := os.Getenv("SSL_CERT_FILE")
+	keyFile := os.Getenv("SSL_KEY_FILE")
+
 	return &Server{
 		router:        mux.NewRouter(),
 		port:          port,
+		httpsPort:     httpsPort,
 		controller:    controllers.NewController(llmProvider, enableSearch),
 		enableDiscord: enableDiscord,
 		enableSearch:  enableSearch,
+		enableHTTPS:   enableHTTPS,
+		certFile:      certFile,
+		keyFile:       keyFile,
 		llmProvider:   llmProvider,
 	}
 }
@@ -52,7 +64,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/health", s.controller.HealthHandler).Methods("GET")
 }
 
-// Start begins the HTTP server and all services
+// Start begins the HTTP and HTTPS servers and all services
 func (s *Server) Start() error {
 	s.setupRoutes()
 
@@ -63,9 +75,10 @@ func (s *Server) Start() error {
 
 	// Setup CORS for future frontend integration
 	c := cors.New(cors.Options{
-		AllowedOrigins: []string{"*"},
-		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders: []string{"*"},
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"*"},
+		AllowCredentials: true,
 	})
 
 	handler := c.Handler(s.router)
@@ -90,6 +103,35 @@ func (s *Server) Start() error {
 		log.Printf("🔍 Web Search: Disabled (use --search flag to enable)")
 	}
 
+	// Start HTTPS server if enabled and certificates are available
+	if s.enableHTTPS {
+		if s.certFile == "" || s.keyFile == "" {
+			log.Printf("❌ HTTPS enabled but SSL_CERT_FILE or SSL_KEY_FILE not set")
+			log.Printf("   Set these environment variables:")
+			log.Printf("   export SSL_CERT_FILE=\"/path/to/cert.pem\"")
+			log.Printf("   export SSL_KEY_FILE=\"/path/to/key.pem\"")
+			log.Printf("🔒 HTTPS server: DISABLED (missing certificates)")
+		} else {
+			log.Printf("🔒 HTTPS server starting on port %s", s.httpsPort)
+			log.Printf("🔒 HTTPS Web interface: https://localhost%s", s.httpsPort)
+			log.Printf("🔒 HTTPS Chat API: https://localhost%s/chat", s.httpsPort)
+			log.Printf("🔒 HTTPS Hello API: https://localhost%s/hello", s.httpsPort)
+			log.Printf("🔒 HTTPS Health check: https://localhost%s/health", s.httpsPort)
+
+			// Start HTTPS server in goroutine
+			go func() {
+				log.Printf("Starting HTTPS server on %s with cert: %s", s.httpsPort, s.certFile)
+				if err := http.ListenAndServeTLS(s.httpsPort, s.certFile, s.keyFile, handler); err != nil {
+					log.Printf("HTTPS server failed: %v", err)
+				}
+			}()
+		}
+	} else {
+		log.Printf("🔒 HTTPS server: Disabled (use --https flag to enable)")
+	}
+
+	// Start HTTP server (always runs)
+	log.Printf("Starting HTTP server on %s", s.port)
 	return http.ListenAndServe(s.port, handler)
 }
 
@@ -101,13 +143,23 @@ func (s *Server) Stop() error {
 
 // GetConfig returns the current server configuration
 func (s *Server) GetConfig() map[string]interface{} {
-	return map[string]interface{}{
+	config := map[string]interface{}{
 		"port":          s.port,
+		"https_port":    s.httpsPort,
 		"discord":       s.enableDiscord,
 		"search":        s.enableSearch,
+		"https":         s.enableHTTPS,
 		"llm_provider":  string(s.llmProvider),
 		"provider_desc": getLLMProviderDescription(s.llmProvider),
 	}
+
+	if s.enableHTTPS {
+		config["ssl_cert_file"] = s.certFile
+		config["ssl_key_file"] = s.keyFile
+		config["ssl_configured"] = (s.certFile != "" && s.keyFile != "")
+	}
+
+	return config
 }
 
 // IsDiscordEnabled returns whether Discord is enabled
@@ -120,14 +172,24 @@ func (s *Server) IsSearchEnabled() bool {
 	return s.enableSearch
 }
 
+// IsHTTPSEnabled returns whether HTTPS is enabled
+func (s *Server) IsHTTPSEnabled() bool {
+	return s.enableHTTPS
+}
+
 // GetLLMProvider returns the current LLM provider
 func (s *Server) GetLLMProvider() services.LLMProvider {
 	return s.llmProvider
 }
 
-// GetPort returns the server port
+// GetPort returns the HTTP server port
 func (s *Server) GetPort() string {
 	return s.port
+}
+
+// GetHTTPSPort returns the HTTPS server port
+func (s *Server) GetHTTPSPort() string {
+	return s.httpsPort
 }
 
 func main() {
@@ -138,11 +200,13 @@ func main() {
 
 	// Define command-line flags
 	var (
-		port          = flag.String("port", ":8080", "Port to run the server on (e.g., :8080)")
+		port          = flag.String("port", ":8080", "Port to run the HTTP server on (e.g., :8080)")
+		httpsPort     = flag.String("https-port", ":8443", "Port to run the HTTPS server on (e.g., :8443)")
 		enableDiscord = flag.Bool("discord", false, "Enable Discord bot service")
 		useChatGPT    = flag.Bool("chatgpt", false, "Use ChatGPT instead of local LLM")
 		useLocal      = flag.Bool("local", false, "Force use of local LLM (Ollama)")
 		enableSearch  = flag.Bool("search", false, "Enable web search for ChatGPT (requires Brave Search API)")
+		enableHTTPS   = flag.Bool("https", false, "Enable HTTPS server (requires SSL_CERT_FILE and SSL_KEY_FILE)")
 		showHelp      = flag.Bool("help", false, "Show help information")
 	)
 	flag.Parse()
@@ -165,27 +229,33 @@ func main() {
 		llmProvider = "" // Auto-detect
 	}
 
-	// Override port from environment if set
+	// Override ports from environment if set
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		*port = envPort
 	}
+	if envHTTPSPort := os.Getenv("HTTPS_PORT"); envHTTPSPort != "" {
+		*httpsPort = envHTTPSPort
+	}
 
-	// Create server with MVC structure
-	server := NewServer(*port, *enableDiscord, llmProvider, *enableSearch)
+	// Create server with HTTPS support
+	server := NewServer(*port, *httpsPort, *enableDiscord, llmProvider, *enableSearch, *enableHTTPS)
 
-	log.Printf("Phase 3+: Multi-Service Architecture with Multi-Provider LLM + Web Search")
+	log.Printf("Phase 3+: Multi-Service Architecture with Multi-Provider LLM + Web Search + HTTPS")
 	log.Printf("✅ Models: Request/Response structures")
 	log.Printf("✅ Views: Template system")
 	log.Printf("✅ Controllers: HTTP handling + Service orchestration")
 	log.Printf("✅ Services: Chatbot + Local LLM + ChatGPT + Discord + Web Search (optional)")
+	log.Printf("✅ Security: HTTPS support with SSL certificates")
 	log.Printf("⏳ Next: Document processing and real RAG")
 
 	// Show current configuration
 	log.Printf("Configuration:")
-	log.Printf("  Port: %s", server.port)
+	log.Printf("  HTTP Port: %s", server.port)
+	log.Printf("  HTTPS Port: %s", server.httpsPort)
 	log.Printf("  Discord: %v", server.enableDiscord)
 	log.Printf("  LLM Provider: %s", getLLMProviderDescription(server.llmProvider))
 	log.Printf("  Web Search: %v", server.enableSearch)
+	log.Printf("  HTTPS: %v", server.enableHTTPS)
 
 	if server.enableDiscord {
 		if os.Getenv("DISCORD_BOT_TOKEN") == "" {
@@ -215,6 +285,18 @@ func main() {
 			apiKey := os.Getenv("BRAVE_SEARCH_API_KEY")
 			masked := maskToken(apiKey)
 			log.Printf("  ✅ BRAVE_SEARCH_API_KEY loaded: %s", masked)
+		}
+	}
+
+	if server.enableHTTPS {
+		if server.certFile == "" || server.keyFile == "" {
+			log.Printf("  ⚠️  SSL certificates not configured:")
+			log.Printf("      Set SSL_CERT_FILE and SSL_KEY_FILE environment variables")
+			log.Printf("      Example: export SSL_CERT_FILE=/etc/letsencrypt/live/yourdomain.com/fullchain.pem")
+			log.Printf("      Example: export SSL_KEY_FILE=/etc/letsencrypt/live/yourdomain.com/privkey.pem")
+		} else {
+			log.Printf("  ✅ SSL_CERT_FILE: %s", server.certFile)
+			log.Printf("  ✅ SSL_KEY_FILE: %s", server.keyFile)
 		}
 	}
 
@@ -263,17 +345,19 @@ func maskToken(token string) string {
 
 // showUsage displays help information
 func showUsage() {
-	log.Printf("RAG Chatbot Server - Multi-Service Architecture with Multi-Provider LLM")
+	log.Printf("RAG Chatbot Server - Multi-Service Architecture with Multi-Provider LLM + HTTPS")
 	log.Printf("")
 	log.Printf("Usage:")
 	log.Printf("  go run main.go [flags]")
 	log.Printf("")
 	log.Printf("Flags:")
-	log.Printf("  --port string      Port to run the server on (default \":8080\")")
+	log.Printf("  --port string      Port to run the HTTP server on (default \":8080\")")
+	log.Printf("  --https-port string Port to run the HTTPS server on (default \":8443\")")
 	log.Printf("  --discord          Enable Discord bot service (default false)")
 	log.Printf("  --chatgpt          Use ChatGPT as primary LLM provider (default false)")
 	log.Printf("  --local            Force use of local LLM/Ollama (default false)")
 	log.Printf("  --search           Enable web search for ChatGPT (default false)")
+	log.Printf("  --https            Enable HTTPS server (default false)")
 	log.Printf("  --help             Show this help information")
 	log.Printf("")
 	log.Printf("LLM Provider Selection:")
@@ -282,7 +366,10 @@ func showUsage() {
 	log.Printf("  --chatgpt          Force ChatGPT, local LLM fallback")
 	log.Printf("")
 	log.Printf("Environment Variables (.env file or system):")
-	log.Printf("  PORT                    Override the port (e.g., :3000)")
+	log.Printf("  PORT                    Override the HTTP port (e.g., :3000)")
+	log.Printf("  HTTPS_PORT              Override the HTTPS port (e.g., :8443)")
+	log.Printf("  SSL_CERT_FILE           Path to SSL certificate file (required for HTTPS)")
+	log.Printf("  SSL_KEY_FILE            Path to SSL private key file (required for HTTPS)")
 	log.Printf("  DISCORD_BOT_TOKEN       Discord bot token (required for Discord)")
 	log.Printf("  DISCORD_COMMAND_PREFIX  Discord command prefix (default \"!chat \")")
 	log.Printf("  OPENAI_API_KEY          OpenAI API key (required for ChatGPT)")
@@ -297,43 +384,38 @@ func showUsage() {
 	log.Printf("  DISCORD_BOT_TOKEN=your_discord_bot_token_here")
 	log.Printf("  OPENAI_API_KEY=sk-your_openai_api_key_here")
 	log.Printf("  BRAVE_SEARCH_API_KEY=your_brave_search_api_key_here")
+	log.Printf("  SSL_CERT_FILE=/path/to/your/cert.pem")
+	log.Printf("  SSL_KEY_FILE=/path/to/your/key.pem")
 	log.Printf("  DISCORD_COMMAND_PREFIX=!chat ")
 	log.Printf("  OPENAI_MODEL=gpt-3.5-turbo")
 	log.Printf("  LLM_MODEL=tinyllama")
 	log.Printf("")
+	log.Printf("HTTPS Setup:")
+	log.Printf("  1. Get SSL certificates (Let's Encrypt recommended):")
+	log.Printf("     sudo apt install certbot")
+	log.Printf("     sudo certbot certonly --standalone -d yourdomain.com")
+	log.Printf("  2. Set environment variables:")
+	log.Printf("     export SSL_CERT_FILE=/etc/letsencrypt/live/yourdomain.com/fullchain.pem")
+	log.Printf("     export SSL_KEY_FILE=/etc/letsencrypt/live/yourdomain.com/privkey.pem")
+	log.Printf("  3. Run with --https flag")
+	log.Printf("")
 	log.Printf("Examples:")
-	log.Printf("  go run main.go                              # Auto-detect LLM, HTTP only")
-	log.Printf("  go run main.go --discord                    # Auto-detect LLM, Discord enabled")
-	log.Printf("  go run main.go --chatgpt                    # Force ChatGPT, HTTP only")
-	log.Printf("  go run main.go --chatgpt --search           # ChatGPT with web search")
-	log.Printf("  go run main.go --chatgpt --discord --search # ChatGPT + Discord + Search")
-	log.Printf("  go run main.go --local                      # Force local LLM")
-	log.Printf("  go run main.go --local --discord --port :3000  # Local LLM + Discord + custom port")
+	log.Printf("  go run main.go                              # HTTP only, auto-detect LLM")
+	log.Printf("  go run main.go --https                      # HTTP + HTTPS, auto-detect LLM")
+	log.Printf("  go run main.go --discord                    # HTTP + Discord, auto-detect LLM")
+	log.Printf("  go run main.go --chatgpt --https            # HTTP + HTTPS + ChatGPT")
+	log.Printf("  go run main.go --chatgpt --search --https   # ChatGPT + web search + HTTPS")
+	log.Printf("  go run main.go --discord --https --search   # All features enabled")
+	log.Printf("  go run main.go --local --https              # Force local LLM + HTTPS")
+	log.Printf("  go run main.go --https --port :3000 --https-port :3443  # Custom ports")
 	log.Printf("")
-	log.Printf("Setup Instructions:")
+	log.Printf("Quick SSL Setup (for swstevens.duckdns.org):")
+	log.Printf("  sudo certbot certonly --standalone -d swstevens.duckdns.org")
+	log.Printf("  export SSL_CERT_FILE=/etc/letsencrypt/live/swstevens.duckdns.org/fullchain.pem")
+	log.Printf("  export SSL_KEY_FILE=/etc/letsencrypt/live/swstevens.duckdns.org/privkey.pem")
+	log.Printf("  go run main.go --https")
 	log.Printf("")
-	log.Printf("Discord Bot Setup:")
-	log.Printf("  1. Create bot at https://discord.com/developers/applications")
-	log.Printf("  2. Get bot token and add to .env: DISCORD_BOT_TOKEN=your_token")
-	log.Printf("  3. Invite bot to your server with message permissions")
-	log.Printf("  4. Run with --discord flag")
-	log.Printf("  5. Use '!chat <message>' in Discord channels")
-	log.Printf("")
-	log.Printf("ChatGPT Setup:")
-	log.Printf("  1. Get API key from https://platform.openai.com/api-keys")
-	log.Printf("  2. Add to .env: OPENAI_API_KEY=sk-your_key_here")
-	log.Printf("  3. Run with --chatgpt flag")
-	log.Printf("  4. Optional: Add --search flag for web search capability")
-	log.Printf("")
-	log.Printf("Web Search Setup:")
-	log.Printf("  1. Get API key from https://brave.com/search/api/")
-	log.Printf("  2. Add to .env: BRAVE_SEARCH_API_KEY=your_key_here")
-	log.Printf("  3. Run with --chatgpt --search flags")
-	log.Printf("  4. ChatGPT will automatically search for current topics")
-	log.Printf("")
-	log.Printf("Local LLM Setup:")
-	log.Printf("  1. Install Ollama: https://ollama.ai")
-	log.Printf("  2. Run: ollama serve")
-	log.Printf("  3. Pull model: ollama pull tinyllama")
-	log.Printf("  4. Run with --local flag (or let auto-detect)")
+	log.Printf("URLs after HTTPS setup:")
+	log.Printf("  HTTP:  http://swstevens.duckdns.org:8080/chat")
+	log.Printf("  HTTPS: https://swstevens.duckdns.org:8443/chat")
 }

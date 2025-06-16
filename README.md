@@ -50,7 +50,7 @@ This project is built in Go instead of Python to create a **lightweight server a
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/swstevens/rag-chatbot-go
 cd rag-chatbot-server
 
 # Build the binary (optimized for ARM64/Raspberry Pi)

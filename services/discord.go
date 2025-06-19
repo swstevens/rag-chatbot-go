@@ -75,7 +75,7 @@ func NewDiscordService(chatbot *Chatbot) *DiscordService {
 // Start begins the Discord bot service
 func (d *DiscordService) Start() error {
 	if !d.enabled {
-		return fmt.Errorf("Discord service not enabled (missing bot token)")
+		return fmt.Errorf("discord service not enabled (missing bot token)")
 	}
 
 	// Open websocket connection

@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"chatbot/models"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 // DiscordService handles Discord bot interactions
@@ -24,7 +25,7 @@ type DiscordService struct {
 func NewDiscordService(chatbot *Chatbot) *DiscordService {
 	token := os.Getenv("DISCORD_BOT_TOKEN")
 	commandPrefix := os.Getenv("DISCORD_COMMAND_PREFIX")
-	
+
 	if commandPrefix == "" {
 		commandPrefix = "!chat "
 	}
@@ -52,22 +53,22 @@ func NewDiscordService(chatbot *Chatbot) *DiscordService {
 		return service
 	}
 
-	service.session = session      
+	service.session = session
 
 	session.AddHandler(func(s *discordgo.Session, event *discordgo.Ready) {
-                log.Printf("✅ Bot is online as: %s", event.User.Username)
-                log.Printf("📊 Connected to %d servers", len(event.Guilds))
-        })
+		log.Printf("✅ Bot is online as: %s", event.User.Username)
+		log.Printf("📊 Connected to %d servers", len(event.Guilds))
+	})
 
 	// Add message handler
 	session.AddHandler(service.messageCreate)
-	
+
 	// Set intents
 	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
 
 	service.enabled = true
 	log.Printf("Discord service initialized with prefix: %s", commandPrefix)
-	
+
 	return service
 }
 
@@ -117,18 +118,78 @@ func (d *DiscordService) messageCreate(s *discordgo.Session, m *discordgo.Messag
 	// Show typing indicator
 	s.ChannelTyping(m.ChannelID)
 
+	// Get recent channel messages for context if RAG is enabled
+	var messageHistory []models.ChatMessage
+	if d.chatbot.enableRAG {
+		// Fetch last 10 messages from the channel (excluding the current command)
+		recentMessages, err := d.getRecentChannelMessages(s, m.ChannelID, 10)
+		if err != nil {
+			log.Printf("Failed to get recent messages for context: %v", err)
+		} else {
+			// Convert Discord messages to ChatMessage format for context
+			messageHistory = d.convertDiscordMessagesToChatHistory(recentMessages)
+		}
+	}
+
 	// Create session ID based on user and channel
 	sessionID := fmt.Sprintf("discord_%s_%s", m.Author.ID, m.ChannelID)
 
-	// Process message through chatbot service
-	response := d.chatbot.ProcessMessage(chatMessage, sessionID, []models.ChatMessage{})
+	// Process message through chatbot service with message history context
+	response := d.chatbot.ProcessMessage(chatMessage, sessionID, messageHistory)
 
 	// Send response back to Discord
 	d.sendMessage(s, m.ChannelID, response.Message)
 
 	// Log the interaction
-	log.Printf("Discord chat: User %s (%s) in channel %s: %s", 
+	log.Printf("Discord chat: User %s (%s) in channel %s: %s",
 		m.Author.Username, m.Author.ID, m.ChannelID, chatMessage)
+}
+
+// getRecentChannelMessages fetches recent messages from a Discord channel
+func (d *DiscordService) getRecentChannelMessages(s *discordgo.Session, channelID string, limit int) ([]*discordgo.Message, error) {
+	// Fetch messages from Discord API
+	messages, err := s.ChannelMessages(channelID, limit, "", "", "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch channel messages: %w", err)
+	}
+
+	// Filter out bot messages and commands, keep only meaningful content
+	var filteredMessages []*discordgo.Message
+	for _, msg := range messages {
+		// Skip bot messages and command messages
+		if msg.Author.Bot || strings.HasPrefix(msg.Content, d.commandPrefix) {
+			continue
+		}
+
+		// Skip very short messages (less than 10 characters)
+		if len(strings.TrimSpace(msg.Content)) < 10 {
+			continue
+		}
+
+		filteredMessages = append(filteredMessages, msg)
+	}
+
+	// Reverse to get chronological order (oldest first)
+	for i, j := 0, len(filteredMessages)-1; i < j; i, j = i+1, j-1 {
+		filteredMessages[i], filteredMessages[j] = filteredMessages[j], filteredMessages[i]
+	}
+
+	return filteredMessages, nil
+}
+
+// convertDiscordMessagesToChatHistory converts Discord messages to ChatMessage format
+func (d *DiscordService) convertDiscordMessagesToChatHistory(messages []*discordgo.Message) []models.ChatMessage {
+	var chatHistory []models.ChatMessage
+
+	for _, msg := range messages {
+		chatHistory = append(chatHistory, models.ChatMessage{
+			Role:      "user", // All Discord messages are treated as user messages for context
+			Content:   fmt.Sprintf("%s: %s", msg.Author.Username, msg.Content),
+			Timestamp: msg.Timestamp,
+		})
+	}
+
+	return chatHistory
 }
 
 // sendMessage sends a message to Discord, handling length limits
@@ -151,12 +212,12 @@ func (d *DiscordService) sendMessage(s *discordgo.Session, channelID, message st
 		if i < len(chunks)-1 {
 			chunk = chunk + "\n..."
 		}
-		
+
 		_, err := s.ChannelMessageSend(channelID, chunk)
 		if err != nil {
 			log.Printf("Error sending Discord message chunk: %v", err)
 		}
-		
+
 		// Small delay between messages to avoid rate limiting
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -178,17 +239,17 @@ func (d *DiscordService) splitMessage(message string, maxLength int) []string {
 
 		chunks = append(chunks, message[:splitIndex])
 		message = message[splitIndex:]
-		
+
 		// Remove leading space if we split at word boundary
 		if strings.HasPrefix(message, " ") {
 			message = message[1:]
 		}
 	}
-	
+
 	if len(message) > 0 {
 		chunks = append(chunks, message)
 	}
-	
+
 	return chunks
 }
 

@@ -8,7 +8,7 @@ type RAGDocument struct {
 	Content  string   `json:"content"`
 	Source   string   `json:"source"`
 	Metadata Metadata `json:"metadata"`
-	Score    float64  `json:"score,omitempty"` // Similarity score
+	Score    float32  `json:"score,omitempty"` // Similarity score
 }
 
 // RAGQuery represents a query to the RAG system
@@ -36,6 +36,7 @@ type RAGResponse struct {
 	Query     string        `json:"query"`
 	Context   []string      `json:"context"`
 	Total     int           `json:"total"` // Total documents found
+	Timestamp time.Time
 }
 
 // RAGConfig represents RAG service configuration

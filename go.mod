@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/bwmarrin/discordgo v0.28.1
 	github.com/gorilla/mux v1.8.1
+	github.com/philippgille/chromem-go v0.7.0
 	github.com/rs/cors v1.11.1
 )
 

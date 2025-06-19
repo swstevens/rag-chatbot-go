@@ -25,13 +25,14 @@ type Server struct {
 	enableDiscord bool
 	enableSearch  bool
 	enableHTTPS   bool
+	enableRAG     bool
 	certFile      string
 	keyFile       string
 	llmProvider   services.LLMProvider
 }
 
 // NewServer creates a new server instance with HTTPS support
-func NewServer(port string, httpsPort string, enableDiscord bool, llmProvider services.LLMProvider, enableSearch bool, enableHTTPS bool) *Server {
+func NewServer(port string, httpsPort string, enableDiscord bool, llmProvider services.LLMProvider, enableSearch bool, enableHTTPS bool, enableRAG bool) *Server {
 	// Get SSL certificate paths from environment
 	certFile := os.Getenv("SSL_CERT_FILE")
 	keyFile := os.Getenv("SSL_KEY_FILE")
@@ -40,10 +41,11 @@ func NewServer(port string, httpsPort string, enableDiscord bool, llmProvider se
 		router:        mux.NewRouter(),
 		port:          port,
 		httpsPort:     httpsPort,
-		controller:    controllers.NewController(llmProvider, enableSearch),
+		controller:    controllers.NewController(llmProvider, enableSearch, enableRAG),
 		enableDiscord: enableDiscord,
 		enableSearch:  enableSearch,
 		enableHTTPS:   enableHTTPS,
+		enableRAG:     enableRAG,
 		certFile:      certFile,
 		keyFile:       keyFile,
 		llmProvider:   llmProvider,
@@ -59,9 +61,11 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/", s.controller.IndexHandler).Methods("GET")
 
 	// API routes
-	s.router.HandleFunc("/hello", s.controller.HelloHandler).Methods("POST")
 	s.router.HandleFunc("/chat", s.controller.ChatHandler).Methods("POST")
 	s.router.HandleFunc("/health", s.controller.HealthHandler).Methods("GET")
+	if s.enableRAG {
+		s.router.HandleFunc("/rag", s.controller.RAGHandler).Methods("POST")
+	}
 }
 
 // Start begins the HTTP and HTTPS servers and all services
@@ -86,7 +90,6 @@ func (s *Server) Start() error {
 	log.Printf("🚀 Starting RAG Chatbot Server (Phase 3+ - Multi-Service) on port %s", s.port)
 	log.Printf("📱 Web interface: http://localhost%s", s.port)
 	log.Printf("💬 Chat API: http://localhost%s/chat", s.port)
-	log.Printf("🔗 Hello API: http://localhost%s/hello", s.port)
 	log.Printf("❤️  Health check: http://localhost%s/health", s.port)
 
 	if s.enableDiscord {
@@ -115,7 +118,6 @@ func (s *Server) Start() error {
 			log.Printf("🔒 HTTPS server starting on port %s", s.httpsPort)
 			log.Printf("🔒 HTTPS Web interface: https://localhost%s", s.httpsPort)
 			log.Printf("🔒 HTTPS Chat API: https://localhost%s/chat", s.httpsPort)
-			log.Printf("🔒 HTTPS Hello API: https://localhost%s/hello", s.httpsPort)
 			log.Printf("🔒 HTTPS Health check: https://localhost%s/health", s.httpsPort)
 
 			// Start HTTPS server in goroutine
@@ -207,6 +209,7 @@ func main() {
 		useLocal      = flag.Bool("local", false, "Force use of local LLM (Ollama)")
 		enableSearch  = flag.Bool("search", false, "Enable web search for ChatGPT (requires Brave Search API)")
 		enableHTTPS   = flag.Bool("https", false, "Enable HTTPS server (requires SSL_CERT_FILE and SSL_KEY_FILE)")
+		enableRAG     = flag.Bool("rag", false, "Enable RAG (Retrieval-Augmented Generation) with document indexing")
 		showHelp      = flag.Bool("help", false, "Show help information")
 	)
 	flag.Parse()
@@ -238,7 +241,7 @@ func main() {
 	}
 
 	// Create server with HTTPS support
-	server := NewServer(*port, *httpsPort, *enableDiscord, llmProvider, *enableSearch, *enableHTTPS)
+	server := NewServer(*port, *httpsPort, *enableDiscord, llmProvider, *enableSearch, *enableHTTPS, *enableRAG)
 
 	log.Printf("Phase 3+: Multi-Service Architecture with Multi-Provider LLM + Web Search + HTTPS")
 	log.Printf("✅ Models: Request/Response structures")
@@ -358,6 +361,7 @@ func showUsage() {
 	log.Printf("  --local            Force use of local LLM/Ollama (default false)")
 	log.Printf("  --search           Enable web search for ChatGPT (default false)")
 	log.Printf("  --https            Enable HTTPS server (default false)")
+	log.Printf("  --rag              Enable RAG with document indexing (default false)")
 	log.Printf("  --help             Show this help information")
 	log.Printf("")
 	log.Printf("LLM Provider Selection:")

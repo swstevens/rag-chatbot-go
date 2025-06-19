@@ -18,9 +18,9 @@ type Controller struct {
 }
 
 // NewController creates a new controller instance
-func NewController(llmProvider services.LLMProvider, enableSearch bool) *Controller {
+func NewController(llmProvider services.LLMProvider, enableSearch bool, enableRAG bool) *Controller {
 	// Initialize chatbot service with specified provider and search capability
-	chatbot := services.NewChatbot(llmProvider, enableSearch)
+	chatbot := services.NewChatbot(llmProvider, enableSearch, enableRAG)
 
 	// Initialize Discord service
 	discordService := services.NewDiscordService(chatbot)

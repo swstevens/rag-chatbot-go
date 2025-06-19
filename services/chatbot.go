@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,10 +30,12 @@ type Chatbot struct {
 	preferredProvider  LLMProvider
 	lastProviderCheck  time.Time
 	providerCheckCache map[LLMProvider]bool
+	ragService         *RAGService
+	enableRAG          bool
 }
 
 // NewChatbot creates a new chatbot instance with specified provider preference
-func NewChatbot(preferredProvider LLMProvider, enableSearch bool) *Chatbot {
+func NewChatbot(preferredProvider LLMProvider, enableSearch bool, enableRAG bool) *Chatbot {
 	var llmService *LLMService
 	var chatgptService *ChatGPTService
 	var currentProvider LLMProvider
@@ -111,6 +114,21 @@ func NewChatbot(preferredProvider LLMProvider, enableSearch bool) *Chatbot {
 		}
 	}
 
+	var ragService *RAGService
+	if enableRAG {
+		ragService = NewRAGService("./data", "chatbot_knowledge", true)
+		if err := ragService.Initialize(); err != nil {
+			log.Printf("Failed to initialize RAG service: %v", err)
+			ragService = nil
+			enableRAG = false
+		} else {
+			// Index documents on startup
+			if err := ragService.IndexDocuments(); err != nil {
+				log.Printf("Failed to index documents: %v", err)
+			}
+		}
+	}
+
 	log.Printf("Chatbot initialized: provider=%s, preferred=%s", currentProvider, preferredProvider)
 
 	return &Chatbot{
@@ -122,6 +140,8 @@ func NewChatbot(preferredProvider LLMProvider, enableSearch bool) *Chatbot {
 		preferredProvider:  preferredProvider,
 		lastProviderCheck:  time.Now(),
 		providerCheckCache: providerCache,
+		ragService:         ragService,
+		enableRAG:          enableRAG,
 	}
 }
 
@@ -130,8 +150,7 @@ func (c *Chatbot) ProcessMessage(message string, sessionID string, history []mod
 	// Clean the input message
 	message = strings.TrimSpace(message)
 
-	// Generate context (Phase 4 will replace with real document search)
-	context := c.generateDummyContext(message)
+	context := c.generateContextWithHistory(message, sessionID, history)
 
 	// Try to generate response using available providers
 	response, usedProvider := c.generateResponse(message, context, history)
@@ -280,6 +299,114 @@ func (c *Chatbot) generateDummySources() []string {
 	return sources[:numSources]
 }
 
+func (c *Chatbot) generateContext(message string, sessionID string) []string {
+	var context []string
+
+	// Add RAG context if enabled
+	if c.enableRAG && c.ragService != nil {
+		// Extract channel ID from session ID if it contains discord info
+		channelID := ""
+		if strings.Contains(sessionID, "discord_") {
+			parts := strings.Split(sessionID, "_")
+			if len(parts) >= 3 {
+				channelID = parts[2] // discord_userID_channelID
+			}
+		}
+
+		ragResponse, err := c.ragService.Query(message, channelID, 3)
+		if err == nil && len(ragResponse.Documents) > 0 {
+			for _, doc := range ragResponse.Documents {
+				contextEntry := fmt.Sprintf("[RAG Context from %s] %s",
+					filepath.Base(doc.Source), doc.Content)
+				context = append(context, contextEntry)
+			}
+		}
+	}
+
+	// Add existing dummy context for compatibility
+	dummyContext := c.generateDummyContext(message)
+	context = append(context, dummyContext...)
+
+	return context
+}
+
+func (c *Chatbot) ProcessRAGQuery(query string, channelID string, limit int) *models.RAGResponse {
+	if !c.enableRAG {
+		return &models.RAGResponse{
+			BaseResponse: models.BaseResponse{
+				Status:    models.StatusError,
+				Error:     "RAG service not enabled",
+				Timestamp: time.Now(),
+			},
+			Documents: []models.RAGDocument{},
+			Query:     query,
+			Context:   []string{},
+			Total:     0,
+		}
+	}
+
+	response, err := c.ragService.Query(query, channelID, limit)
+	if err != nil {
+		log.Printf("RAG query failed: %v", err)
+		return &models.RAGResponse{
+			BaseResponse: models.BaseResponse{
+				Status:    models.StatusError,
+				Error:     err.Error(),
+				Timestamp: time.Now(),
+			},
+			Documents: []models.RAGDocument{},
+			Query:     query,
+			Context:   []string{},
+			Total:     0,
+		}
+	}
+
+	return response
+}
+
+func (c *Chatbot) generateContextWithHistory(message string, sessionID string, history []models.ChatMessage) []string {
+	var context []string
+
+	// Add RAG context if enabled
+	if c.enableRAG {
+		// Extract channel ID from Discord session ID format: discord_userID_channelID
+		channelID := ""
+		if strings.Contains(sessionID, "discord_") {
+			parts := strings.Split(sessionID, "_")
+			if len(parts) >= 3 {
+				channelID = parts[2]
+			}
+		}
+
+		// Get RAG context from documents
+		ragResponse, err := c.ragService.Query(message, channelID, 3)
+		if err == nil && len(ragResponse.Documents) > 0 {
+			for _, doc := range ragResponse.Documents {
+				contextEntry := fmt.Sprintf("[Document: %s] %s",
+					filepath.Base(doc.Source), doc.Content)
+				context = append(context, contextEntry)
+			}
+		}
+	}
+
+	// Add Discord message history as context
+	if len(history) > 0 {
+		context = append(context, "[Recent Channel Messages]")
+		for _, msg := range history {
+			context = append(context, msg.Content)
+		}
+	}
+
+	// Add existing dummy context for compatibility (reduced since we have real context now)
+	if len(context) == 0 {
+		// Only add dummy context if we have no real context
+		dummyContext := c.generateDummyContext(message)
+		context = append(context, dummyContext...)
+	}
+
+	return context
+}
+
 // GetStatus returns the current status of the chatbot
 func (c *Chatbot) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{
@@ -325,6 +452,17 @@ func (c *Chatbot) GetStatus() map[string]interface{} {
 		capabilities = append(capabilities, "local_llm_only", "no_chatgpt_resources")
 	default:
 		capabilities = append(capabilities, "multi_provider_llm", "automatic_fallback")
+	}
+
+	if c.ragService != nil {
+		status["rag"] = c.ragService.GetStatus()
+		status["rag_enabled"] = c.enableRAG
+	} else {
+		status["rag"] = map[string]interface{}{
+			"status": "disabled",
+			"note":   "RAG not enabled or failed to initialize",
+		}
+		status["rag_enabled"] = false
 	}
 
 	status["capabilities"] = capabilities

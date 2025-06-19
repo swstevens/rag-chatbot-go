@@ -23,7 +23,7 @@ func (c *Controller) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		"status":    "healthy",
 		"phase":     "3+",
 		"component": "mvc-with-chatbot-and-discord",
-		"endpoints": []string{"/", "/hello", "/chat", "/health"},
+		"endpoints": []string{"/", "/chat", "/health"},
 		"chatbot":   chatbotStatus,
 		"discord":   discordStatus,
 	}

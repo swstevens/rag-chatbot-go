@@ -391,9 +391,13 @@ func (c *Chatbot) generateContextWithHistory(message string, sessionID string, h
 
 	// Add Discord message history as context
 	if len(history) > 0 {
-		context = append(context, "[Recent Channel Messages]")
+		context = append(context, "[Recent Conversation]")
 		for _, msg := range history {
-			context = append(context, msg.Content)
+			if msg.Role == "assistant" {
+				context = append(context, fmt.Sprintf("Bot: %s", msg.Content))
+			} else {
+				context = append(context, msg.Content) // Already has username
+			}
 		}
 	}
 

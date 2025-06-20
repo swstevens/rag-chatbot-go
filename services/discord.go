@@ -76,7 +76,7 @@ func NewDiscordService(chatbot *Chatbot) *DiscordService {
 // Start begins the Discord bot service
 func (d *DiscordService) Start() error {
 	if !d.enabled {
-		return fmt.Errorf("Discord service not enabled (missing bot token)")
+		return fmt.Errorf("discord service not enabled (missing bot token)")
 	}
 
 	// Open websocket connection
@@ -157,12 +157,12 @@ func (d *DiscordService) getRecentChannelMessages(s *discordgo.Session, channelI
 	// Filter out bot messages and commands, keep only meaningful content
 	var filteredMessages []*discordgo.Message
 	for _, msg := range messages {
-		// Skip bot messages and command messages
-		if msg.Author.Bot || strings.HasPrefix(msg.Content, d.commandPrefix) {
+		// ✅ KEEP bot messages now, but identify them
+		if strings.HasPrefix(msg.Content, d.commandPrefix) {
 			continue
 		}
 
-		// Skip very short messages (less than 10 characters)
+		// Skip very short messages
 		if len(strings.TrimSpace(msg.Content)) < 10 {
 			continue
 		}
@@ -183,9 +183,19 @@ func (d *DiscordService) convertDiscordMessagesToChatHistory(messages []*discord
 	var chatHistory []models.ChatMessage
 
 	for _, msg := range messages {
+		role := "user"
+		if msg.Author.Bot {
+			role = "assistant"
+		}
+
+		content := msg.Content
+		if !msg.Author.Bot {
+			content = fmt.Sprintf("%s: %s", msg.Author.Username, msg.Content)
+		}
+
 		chatHistory = append(chatHistory, models.ChatMessage{
-			Role:      "user", // All Discord messages are treated as user messages for context
-			Content:   fmt.Sprintf("%s: %s", msg.Author.Username, msg.Content),
+			Role:      role,
+			Content:   content,
 			Timestamp: msg.Timestamp,
 		})
 	}

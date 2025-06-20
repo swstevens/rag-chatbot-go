@@ -1,6 +1,8 @@
 # RAG Chatbot Server
 
 A lightweight, multi-service chatbot server built in Go for resource-constrained environments like Raspberry Pi. Features multi-provider LLM support, Discord integration, web search capabilities, and HTTPS support.
+You can try out the discord bot on your own servers with this link:
+https://discord.com/oauth2/authorize?client_id=1383545037027147908&permissions=3072&scope=bot
 
 ## Why Go?
 
@@ -42,7 +44,7 @@ This project is built in Go instead of Python to create a **lightweight server a
 
 ### Prerequisites
 
-- Go 1.19+ installed
+- Go 1.21+ installed
 - Ollama running (for local LLM) or OpenAI API key
 - Optional: Discord bot token, Brave Search API key, SSL certificates
 

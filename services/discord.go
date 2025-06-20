@@ -58,6 +58,7 @@ func NewDiscordService(chatbot *Chatbot) *DiscordService {
 	session.AddHandler(func(s *discordgo.Session, event *discordgo.Ready) {
 		log.Printf("✅ Bot is online as: %s", event.User.Username)
 		log.Printf("📊 Connected to %d servers", len(event.Guilds))
+		log.Printf("connected guilds: %v", event.Guilds)
 	})
 
 	// Add message handler
